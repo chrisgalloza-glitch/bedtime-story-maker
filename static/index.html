@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Bedtime Story Maker</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>🌙 Bedtime Story Maker</h1>
+    <p class="sub">Tell me an idea. I’ll write a gentle story and Ava will read it to you.</p>
+  </header>
+
+  <!-- PIN gate -->
+  <section id="pin-screen" class="card pin-box">
+    <label class="big" for="pin">Family PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" />
+    <div class="row">
+      <button class="btn" id="pin-go" type="button">Unlock</button>
+    </div>
+    <p class="status" id="pin-status">Ask a grown-up for the PIN.</p>
+  </section>
+
+  <!-- Main app -->
+  <section id="app-screen" class="hidden">
+    <div class="card">
+      <label class="big">Language / Idioma</label>
+      <div class="lang" role="group">
+        <button type="button" class="active" data-lang="English" id="lang-en">English</button>
+        <button type="button" data-lang="Español" id="lang-es">Español</button>
+      </div>
+
+      <label class="big" for="idea">Your story idea</label>
+      <textarea id="idea" placeholder="Example: a little duck who finds a sparkly pond and makes a new friend…"></textarea>
+      <p class="hint">🎤 Tip: tap the microphone on your keyboard to talk your idea.</p>
+      <div class="row">
+        <button class="btn mic hidden" id="mic-btn" type="button" title="Speak">🎤 Speak</button>
+        <button class="btn" id="make-btn" type="button" style="flex:1">✨ Make My Story</button>
+      </div>
+      <p class="status" id="status">Type your idea, then press Make My Story!</p>
+    </div>
+
+    <div class="card hidden" id="player-card">
+      <label class="big" id="result-title">Your story</label>
+      <audio id="player" controls playsinline></audio>
+      <div class="row">
+        <a class="btn secondary" id="download-btn" href="#" download>⬇ Download MP3</a>
+      </div>
+    </div>
+
+    <div class="card stories">
+      <h2>Past stories</h2>
+      <ul id="story-list"><li class="meta">None yet — make your first story!</li></ul>
+    </div>
+
+    <p class="footer">Add to Home Screen for easy bedtime use.<br/>
+      Chrome menu → Add to Home screen / Install app</p>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

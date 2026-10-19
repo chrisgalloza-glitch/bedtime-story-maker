@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="40" fill="#1a1a2e"/>
+  <circle cx="110" cy="85" r="48" fill="#f0c674"/>
+  <circle cx="130" cy="75" r="40" fill="#1a1a2e"/>
+  <circle cx="55" cy="140" r="6" fill="#eee8d5"/>
+  <circle cx="80" cy="155" r="4" fill="#eee8d5"/>
+  <circle cx="145" cy="150" r="5" fill="#eee8d5"/>
+  <text x="96" y="178" text-anchor="middle" font-size="22" fill="#e94560" font-family="sans-serif">Story</text>
+</svg>

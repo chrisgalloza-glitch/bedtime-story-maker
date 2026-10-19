@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+data/stories/
+data/*.mp3
+.env
