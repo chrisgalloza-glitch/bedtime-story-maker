@@ -14,10 +14,13 @@
   const downloadBtn = $("download-btn");
   const resultTitle = $("result-title");
   const storyList = $("story-list");
+  const voiceGrid = $("voice-grid");
   let language = "English";
+  let selectedVoice = localStorage.getItem("storyVoice") || "ava";
+  let voices = [];
   let pollTimer = null;
+  let previewAudio = null;
 
-  // --- IndexedDB cache of downloaded stories (survives Render free sleep) ---
   const DB_NAME = "bedtime-stories";
   const STORE = "stories";
 
@@ -68,14 +71,103 @@
     });
     let data = null;
     const ct = res.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      data = await res.json();
-    }
+    if (ct.includes("application/json")) data = await res.json();
     if (!res.ok) {
       const detail = (data && (data.detail || data.error)) || res.statusText;
       throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
     }
     return data;
+  }
+
+  function langCode() {
+    return language.startsWith("Es") ? "es" : "en";
+  }
+
+  function renderVoices() {
+    voiceGrid.innerHTML = "";
+    (voices.length ? voices : [
+      { id: "ava", name: "Ava", description: "Warm free bedtime voice.", uses_credit: false, emoji: "🦆" },
+    ]).forEach((v) => {
+      const card = document.createElement("div");
+      card.className = "voice-card" + (v.id === selectedVoice ? " selected" : "");
+      card.dataset.voice = v.id;
+      card.innerHTML =
+        '<div class="v-name">' + (v.emoji || "") + " " + v.name + "</div>" +
+        '<div class="v-desc">' + (v.description || "") + "</div>" +
+        (v.uses_credit
+          ? '<div class="v-credit">uses a little Grok credit</div>'
+          : '<div class="v-credit" style="color:var(--ok)">free</div>') +
+        '<div class="v-actions">' +
+        '<button type="button" class="preview-btn" data-preview="' + v.id + '">▶️ Preview</button>' +
+        '<button type="button" class="select-btn" data-select="' + v.id + '">' +
+        (v.id === selectedVoice ? "✓ Selected" : "Choose") +
+        "</button></div>";
+      voiceGrid.appendChild(card);
+    });
+
+    voiceGrid.querySelectorAll("[data-select]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectVoice(btn.getAttribute("data-select"));
+      });
+    });
+    voiceGrid.querySelectorAll("[data-preview]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        playPreview(btn.getAttribute("data-preview"));
+      });
+    });
+    voiceGrid.querySelectorAll(".voice-card").forEach((card) => {
+      card.addEventListener("click", () => selectVoice(card.dataset.voice));
+    });
+  }
+
+  function selectVoice(id) {
+    selectedVoice = id || "ava";
+    localStorage.setItem("storyVoice", selectedVoice);
+    renderVoices();
+    const name = (voices.find((v) => v.id === selectedVoice) || {}).name || selectedVoice;
+    setStatus("Voice: " + name);
+  }
+
+  async function playPreview(id) {
+    try {
+      if (previewAudio) {
+        previewAudio.pause();
+        previewAudio = null;
+      }
+      setStatus("Playing preview…", "busy");
+      const res = await fetch(
+        "/api/voices/" + encodeURIComponent(id) + "/preview?lang=" + langCode(),
+        { credentials: "same-origin" }
+      );
+      if (!res.ok) throw new Error("Preview failed (" + res.status + ")");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      previewAudio = new Audio(url);
+      previewAudio.playsInline = true;
+      previewAudio.onended = () => {
+        URL.revokeObjectURL(url);
+        setStatus("Ready — pick a voice and make a story!");
+      };
+      await previewAudio.play();
+    } catch (e) {
+      setStatus(e.message || "Could not play preview", "err");
+    }
+  }
+
+  async function loadVoices() {
+    try {
+      const data = await api("/api/voices");
+      voices = data.voices || [];
+      if (!voices.some((v) => v.id === selectedVoice)) {
+        selectedVoice = data.default || "ava";
+        localStorage.setItem("storyVoice", selectedVoice);
+      }
+    } catch (_) {
+      voices = [];
+    }
+    renderVoices();
   }
 
   async function checkSession() {
@@ -84,6 +176,7 @@
       if (s.ok) {
         pinScreen.classList.add("hidden");
         appScreen.classList.remove("hidden");
+        await loadVoices();
         await refreshStories();
         return true;
       }
@@ -116,7 +209,6 @@
     });
   });
 
-  // Web Speech API mic (Chrome Android often supports it)
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRec) {
     micBtn.classList.remove("hidden");
@@ -136,9 +228,7 @@
       setStatus("Listening… speak your idea", "busy");
       rec.onresult = (ev) => {
         let text = "";
-        for (let i = 0; i < ev.results.length; i++) {
-          text += ev.results[i][0].transcript;
-        }
+        for (let i = 0; i < ev.results.length; i++) text += ev.results[i][0].transcript;
         idea.value = text.trim();
       };
       rec.onerror = () => {
@@ -151,7 +241,7 @@
         rec = null;
         if (idea.value.trim()) setStatus("Got it! Press Make My Story when ready.");
       };
-      try { rec.start(); } catch (e) {
+      try { rec.start(); } catch (_) {
         setStatus("Mic not available — use the keyboard 🎤", "err");
         micBtn.textContent = "🎤 Speak";
         rec = null;
@@ -202,14 +292,12 @@
       server = data.stories || [];
     } catch (_) {}
     let local = [];
-    try {
-      local = await idbAll();
-    } catch (_) {}
+    try { local = await idbAll(); } catch (_) {}
     renderList(server, local);
   }
 
   async function fetchAudioBlob(storyId) {
-    const res = await fetch(`/api/stories/${storyId}/audio`, { credentials: "same-origin" });
+    const res = await fetch("/api/stories/" + storyId + "/audio", { credentials: "same-origin" });
     if (!res.ok) throw new Error("Could not download audio");
     return await res.blob();
   }
@@ -240,7 +328,7 @@
       resultTitle.textContent = s.title || "Your story";
       player.src = url;
       downloadBtn.href = url;
-      downloadBtn.download = `${(s.title || "story").replace(/[^\w\- ]+/g, "").slice(0, 40)}.mp3`;
+      downloadBtn.download = ((s.title || "story").replace(/[^\w\- ]+/g, "").slice(0, 40) || "story") + ".mp3";
       player.play().catch(() => {});
       setStatus("Playing…", "ok");
     } catch (e) {
@@ -257,7 +345,7 @@
     clearInterval(pollTimer);
     const tick = async () => {
       try {
-        const j = await api(`/api/jobs/${jobId}`);
+        const j = await api("/api/jobs/" + jobId);
         setStatus(j.progress || j.status, j.status === "error" ? "err" : "busy");
         if (j.status === "done" && j.story_id) {
           clearInterval(pollTimer);
@@ -274,7 +362,7 @@
           resultTitle.textContent = meta.title;
           player.src = url;
           downloadBtn.href = url;
-          downloadBtn.download = `${meta.title.replace(/[^\w\- ]+/g, "").slice(0, 40)}.mp3`;
+          downloadBtn.download = (meta.title.replace(/[^\w\- ]+/g, "").slice(0, 40) || "story") + ".mp3";
           setStatus("All done! Playing now…", "ok");
           player.play().catch(() => {});
           await refreshStories();
@@ -283,8 +371,7 @@
           makeBtn.disabled = false;
           setStatus(j.error || "Something went wrong", "err");
         }
-      } catch (e) {
-        // Keep polling through cold starts / brief network blips
+      } catch (_) {
         setStatus("Still working… (waking up the story server)", "busy");
       }
     };
@@ -304,7 +391,11 @@
     try {
       const { job_id } = await api("/api/stories", {
         method: "POST",
-        body: JSON.stringify({ idea: text, language }),
+        body: JSON.stringify({
+          idea: text,
+          language,
+          voice: selectedVoice || "ava",
+        }),
       });
       await pollJob(job_id);
     } catch (e) {

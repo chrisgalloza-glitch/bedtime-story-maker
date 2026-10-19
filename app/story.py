@@ -265,7 +265,7 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
     return story
 
 
-async def _synth_chunk(text: str, voice: str, rate: str) -> bytes:
+async def _synth_chunk_edge(text: str, voice: str, rate: str) -> bytes:
     import edge_tts
 
     communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
@@ -276,22 +276,172 @@ async def _synth_chunk(text: str, voice: str, rate: str) -> bytes:
     return bytes(buf)
 
 
+def _call_xai_tts(text: str, voice_id: str, language: str, speed: float | None = None) -> bytes:
+    """POST https://api.x.ai/v1/tts — returns raw MP3 bytes."""
+    if not config.XAI_API_KEY:
+        raise RuntimeError("XAI_API_KEY is not set")
+    body = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+        "speed": speed if speed is not None else config.XAI_TTS_SPEED,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        config.XAI_TTS_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.XAI_API_KEY}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"xAI TTS error {e.code}: {err_body[:400]}") from e
+
+
+def split_for_xai(text: str, max_chars: int | None = None) -> list[str]:
+    """Prefer paragraph breaks, then sentences, under max_chars."""
+    if max_chars is None:
+        max_chars = config.XAI_TTS_CHUNK_CHARS
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        if len(para) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(split_at_sentences(para, max_chars))
+            continue
+        candidate = (current + "\n\n" + para).strip() if current else para
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def synthesize_story(
-    text: str, progress: ProgressCB | None = None
+    text: str,
+    voice_id: str | None = None,
+    language: str = "English",
+    progress: ProgressCB | None = None,
 ) -> bytes:
-    chunks = split_at_sentences(text, config.TTS_CHUNK_CHARS)
+    """Synthesize with selected voice; unknown → Ava; xAI failure → Ava for rest."""
+    from .voices import get_voice
+
+    voice = get_voice(voice_id)
+    display = voice.name
+
+    if voice.engine == "edge":
+        chunks = split_at_sentences(text, config.TTS_CHUNK_CHARS)
+        total = len(chunks)
+        audio = bytearray()
+        for i, chunk in enumerate(chunks, 1):
+            if progress:
+                progress(f"Recording {display}'s voice… part {i} of {total}")
+            try:
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+            except Exception:
+                await asyncio.sleep(1.5)
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+        return bytes(audio)
+
+    # Grok / xAI TTS
+    from .voices import tts_language_code
+
+    lang_code = tts_language_code(language)
+    chunks = split_for_xai(text, config.XAI_TTS_CHUNK_CHARS)
     total = len(chunks)
     audio = bytearray()
+    fell_back = False
+    xai_id = voice.xai_voice_id or voice.id
+
     for i, chunk in enumerate(chunks, 1):
+        if fell_back:
+            if progress:
+                progress(
+                    f"Recording Ava's voice… part {i} of {total} "
+                    f"(switched after {display} had trouble)"
+                )
+            try:
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+            except Exception:
+                await asyncio.sleep(1.5)
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+            continue
+
         if progress:
-            progress(f"Recording Ava's voice… part {i} of {total}")
-        # Retry once on transient NoAudioReceived
+            progress(f"Recording {display}'s voice… part {i} of {total}")
         try:
-            audio.extend(await _synth_chunk(chunk, config.VOICE, config.RATE))
-        except Exception:
-            await asyncio.sleep(1.5)
-            audio.extend(await _synth_chunk(chunk, config.VOICE, config.RATE))
+            part = await asyncio.to_thread(
+                _call_xai_tts, chunk, xai_id, lang_code, config.XAI_TTS_SPEED
+            )
+            if not part or len(part) < 100:
+                raise RuntimeError("empty TTS response")
+            audio.extend(part)
+        except Exception as e:
+            fell_back = True
+            err = str(e)[:80]
+            if progress:
+                progress(
+                    f"{display} had trouble ({err}) — "
+                    f"finishing with Ava… part {i} of {total}"
+                )
+            try:
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+            except Exception:
+                await asyncio.sleep(1.5)
+                audio.extend(
+                    await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
+                )
+
+    if fell_back and progress:
+        progress(f"Finished with Ava after {display} had trouble.")
     return bytes(audio)
+
+
+async def synthesize_preview(voice_id: str, lang: str) -> bytes:
+    """Short preview clip for a voice (used by /api/voices/.../preview)."""
+    from .voices import get_voice, preview_text
+
+    voice = get_voice(voice_id)
+    text = preview_text(lang)
+    if voice.engine == "edge":
+        return await _synth_chunk_edge(text, config.VOICE, config.RATE)
+    lang_code = "es-MX" if lang.lower().startswith("es") else "en"
+    return await asyncio.to_thread(
+        _call_xai_tts,
+        text,
+        voice.xai_voice_id or voice.id,
+        lang_code,
+        config.XAI_TTS_SPEED,
+    )
+
 
 
 def spoken_text(story: str, title: str) -> str:

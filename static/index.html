@@ -15,10 +15,9 @@
 <body>
   <header>
     <h1>🌙 Bedtime Story Maker</h1>
-    <p class="sub">Tell me an idea. I’ll write a gentle story and Ava will read it to you.</p>
+    <p class="sub">Tell me an idea. I’ll write a gentle story and read it to you.</p>
   </header>
 
-  <!-- PIN gate -->
   <section id="pin-screen" class="card pin-box">
     <label class="big" for="pin">Family PIN</label>
     <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" />
@@ -28,7 +27,6 @@
     <p class="status" id="pin-status">Ask a grown-up for the PIN.</p>
   </section>
 
-  <!-- Main app -->
   <section id="app-screen" class="hidden">
     <div class="card">
       <label class="big">Language / Idioma</label>
@@ -36,6 +34,9 @@
         <button type="button" class="active" data-lang="English" id="lang-en">English</button>
         <button type="button" data-lang="Español" id="lang-es">Español</button>
       </div>
+
+      <label class="big">Who should read?</label>
+      <div class="voice-grid" id="voice-grid" aria-label="Choose a voice"></div>
 
       <label class="big" for="idea">Your story idea</label>
       <textarea id="idea" placeholder="Example: a little duck who finds a sparkly pond and makes a new friend…"></textarea>

@@ -5,14 +5,16 @@ import hashlib
 import hmac
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config
 from . import jobs as jobs_mod
+from . import previews as previews_mod
 from . import story as story_mod
+from .voices import get_voice, list_voices_public
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
@@ -27,7 +29,6 @@ def _pin_ok(pin: str) -> bool:
 
 
 def _session_token() -> str:
-    """Signed cookie value derived from FAMILY_PIN (rotates if PIN changes)."""
     return hmac.new(
         config.FAMILY_PIN.encode("utf-8"),
         b"story-maker-session-v1",
@@ -51,6 +52,7 @@ class PinBody(BaseModel):
 class StoryBody(BaseModel):
     idea: str = Field(min_length=2, max_length=2000)
     language: str = Field(default="English", max_length=32)
+    voice: str = Field(default="ava", max_length=32)
 
 
 @app.get("/api/health")
@@ -59,7 +61,9 @@ def health():
         "ok": True,
         "mock_llm": config.MOCK_LLM,
         "has_gemini": bool(config.GEMINI_API_KEY),
-        "voice": config.VOICE,
+        "has_xai": bool(config.XAI_API_KEY),
+        "default_voice": "ava",
+        "voices": [v["id"] for v in list_voices_public()],
     }
 
 
@@ -73,7 +77,9 @@ def login(body: PinBody, request: Request):
     if not _pin_ok(body.pin):
         raise HTTPException(status_code=403, detail="Wrong PIN. Ask a grown-up.")
     response = JSONResponse({"ok": True})
-    forwarded = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    forwarded = (
+        request.headers.get("x-forwarded-proto") or request.url.scheme or ""
+    ).split(",")[0].strip()
     secure = forwarded == "https"
     response.set_cookie(
         key=config.SESSION_COOKIE,
@@ -93,23 +99,58 @@ def logout(response: Response):
     return response
 
 
+@app.get("/api/voices")
+def voices(request: Request):
+    require_auth(request)
+    return {"voices": list_voices_public(), "default": "ava"}
+
+
+@app.get("/api/voices/{voice_id}/preview")
+def voice_preview(
+    voice_id: str,
+    request: Request,
+    lang: str = Query(default="en", pattern="^(en|es)$"),
+):
+    require_auth(request)
+    voice = get_voice(voice_id)
+    try:
+        path = previews_mod.ensure_preview(voice.id, lang)
+    except Exception as e:
+        # Last resort: Ava preview so the tablet never soft-locks
+        if voice.id != "ava":
+            try:
+                path = previews_mod.ensure_preview("ava", lang)
+            except Exception:
+                raise HTTPException(503, f"Preview unavailable: {e}") from e
+        else:
+            raise HTTPException(503, f"Preview unavailable: {e}") from e
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        filename=f"{voice.id}-{lang}-preview.mp3",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.post("/api/stories")
 def start_story(body: StoryBody, request: Request, background: BackgroundTasks):
     require_auth(request)
     idea = body.idea.strip()
     if not idea:
         raise HTTPException(400, "Type a story idea first.")
-    # Cap concurrent active jobs
     active = sum(
-        1 for j in jobs_mod._jobs.values() if j.status in ("queued", "writing", "speaking")
+        1
+        for j in jobs_mod._jobs.values()
+        if j.status in ("queued", "writing", "speaking")
     )
     if active >= 2:
         raise HTTPException(
             429, "A story is already being made. Please wait until it finishes."
         )
-    job = jobs_mod.create_job(idea, body.language)
+    voice = get_voice(body.voice)
+    job = jobs_mod.create_job(idea, body.language, voice.id)
     background.add_task(jobs_mod.run_job, job.id)
-    return {"job_id": job.id}
+    return {"job_id": job.id, "voice": voice.id}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -125,6 +166,7 @@ def job_status(job_id: str, request: Request):
         "error": job.error,
         "story_id": job.story_id,
         "title": job.title,
+        "voice": job.voice_id,
     }
 
 
@@ -158,7 +200,5 @@ def get_text(story_id: str, request: Request):
     return {"text": txt.read_text(encoding="utf-8")}
 
 
-
-# Static frontend (PWA)
 if STATIC.is_dir():
     app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")

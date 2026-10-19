@@ -75,3 +75,19 @@ Open http://127.0.0.1:8000 — PIN `1234`.
 - Story (free): Google **gemini-3.8-flash**
 - Story (paid alt): xAI **grok-4.3**
 - Voice: **en-US-AvaMultilingualNeural** at **-10%** (works for English and Spanish)
+
+
+## Voices
+
+Kids pick a reader on the home screen:
+
+| Card | Engine | Notes |
+|------|--------|-------|
+| **Ava** (default) | Microsoft edge-tts `en-US-AvaMultilingualNeural` @ −10% | Free |
+| **Luna** | xAI TTS `luna` @ speed 0.9 | Gentle / nurturing — uses Grok credit |
+| **Carina** | xAI TTS `carina` @ speed 0.9 | Soft / soothing — uses Grok credit |
+| **Orion** | xAI TTS `orion` @ speed 0.9 | Rich calm storyteller — uses Grok credit |
+
+Choice is stored in `localStorage` and sent as `voice` on `POST /api/stories`.
+Previews: `GET /api/voices/{id}/preview?lang=en|es` (PIN required).
+If a Grok voice fails mid-story, the rest falls back to Ava.

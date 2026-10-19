@@ -4,3 +4,4 @@ __pycache__/
 data/stories/
 data/*.mp3
 .env
+data/previews/
