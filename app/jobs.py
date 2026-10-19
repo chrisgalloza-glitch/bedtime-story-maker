@@ -20,6 +20,7 @@ class Job:
     language: str
     voice_id: str = "ava"
     length: str = "medium"
+    profile: str = "p1"
     parts_total: int = 0
     parts_ready: list = field(default_factory=list)
     status: str = "queued"  # queued | writing | speaking | done | error
@@ -38,7 +39,7 @@ _lock = threading.Lock()
 _MAX_JOBS = 40
 
 
-def create_job(idea: str, language: str, voice_id: str = "ava", length: str = "medium") -> Job:
+def create_job(idea: str, language: str, voice_id: str = "ava", length: str = "medium", profile: str = "p1") -> Job:
     voice = get_voice(voice_id)
     job = Job(
         id=secrets.token_urlsafe(10),
@@ -46,6 +47,7 @@ def create_job(idea: str, language: str, voice_id: str = "ava", length: str = "m
         language=language,
         voice_id=voice.id,
         length=length,
+        profile=profile,
         story_id=secrets.token_urlsafe(8),
         percent=1,
         progress="Waiting to start…",
@@ -108,6 +110,7 @@ def run_job(job_id: str) -> None:
         try:
             meta["voice_id"] = job.voice_id
             meta["length"] = job.length
+            meta["profile"] = job.profile
             (folder / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             pass

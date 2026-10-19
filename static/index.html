@@ -28,6 +28,19 @@
   </section>
 
   <section id="app-screen" class="hidden">
+    <div class="card profile-card">
+      <label class="big">Who is listening tonight?</label>
+      <div class="profile-row" id="profile-row"></div>
+      <div class="profile-edit hidden" id="profile-edit">
+        <input id="profile-name" type="text" maxlength="16" placeholder="Name" />
+        <div class="emoji-grid" id="emoji-grid"></div>
+        <div class="row">
+          <button class="btn secondary" id="profile-cancel" type="button">Cancel</button>
+          <button class="btn" id="profile-save" type="button" style="flex:1">✓ Save</button>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <label class="big">Language / Idioma</label>
       <div class="lang" role="group">
@@ -69,6 +82,7 @@
       <label class="big" id="result-title">Your story</label>
       <p class="status ok" id="now-playing">Starting now!</p>
       <div class="row" id="live-controls">
+        <button class="btn secondary" id="restart-btn" type="button" style="flex:1">⏮️ Start over</button>
         <button class="btn" id="live-toggle" type="button" style="flex:1">⏸ Pause</button>
       </div>
       <audio id="player" controls playsinline class="hidden"></audio>

@@ -22,10 +22,34 @@
   const progressTrack = $("progress-track");
   const celebrate = $("celebrate");
   let language = "English";
-  let storyLength = localStorage.getItem("storyLength") || "medium";
-  let selectedVoice = localStorage.getItem("storyVoice") || "ava";
+  // ---- child profiles (settings + history kept per profile) ----
+  const DEFAULT_PROFILES = [
+    { id: "p1", name: "Kid 1", emoji: "🦄" },
+    { id: "p2", name: "Kid 2", emoji: "🐱" },
+  ];
+  function loadProfiles() {
+    let list = null;
+    try { list = JSON.parse(localStorage.getItem("storyProfiles") || "null"); } catch (_) {}
+    if (!Array.isArray(list) || list.length !== 2) list = DEFAULT_PROFILES.map((p) => ({ ...p }));
+    // one-time migration: old single-user settings become profile 1's
+    if (!localStorage.getItem("profilesMigrated")) {
+      const oldVoice = localStorage.getItem("storyVoice");
+      const oldLen = localStorage.getItem("storyLength");
+      if (oldVoice && !localStorage.getItem("storyVoice:p1")) localStorage.setItem("storyVoice:p1", oldVoice);
+      if (oldLen && !localStorage.getItem("storyLength:p1")) localStorage.setItem("storyLength:p1", oldLen);
+      localStorage.setItem("profilesMigrated", "1");
+    }
+    localStorage.setItem("storyProfiles", JSON.stringify(list));
+    return list;
+  }
+  let profiles = loadProfiles();
+  let activeProfile = localStorage.getItem("activeProfile") === "p2" ? "p2" : "p1";
+  const pKey = (k) => k + ":" + activeProfile;
+  let storyLength = localStorage.getItem(pKey("storyLength")) || "medium";
+  let selectedVoice = localStorage.getItem(pKey("storyVoice")) || "ava";
   let voices = [];
   let pollTimer = null;
+  let jobProfile = "p1";
   let previewAudio = null;
   let displayPercent = 0;
   let targetPercent = 0;
@@ -219,7 +243,7 @@
 
   function selectVoice(id) {
     selectedVoice = id || "ava";
-    localStorage.setItem("storyVoice", selectedVoice);
+    localStorage.setItem(pKey("storyVoice"), selectedVoice);
     renderVoices();
     const name = (voices.find((v) => v.id === selectedVoice) || {}).name || selectedVoice;
     setStatus("Voice: " + name);
@@ -257,7 +281,7 @@
       voices = data.voices || [];
       if (!voices.some((v) => v.id === selectedVoice)) {
         selectedVoice = data.default || "ava";
-        localStorage.setItem("storyVoice", selectedVoice);
+        localStorage.setItem(pKey("storyVoice"), selectedVoice);
       }
     } catch (_) {
       voices = [];
@@ -383,11 +407,13 @@
   async function refreshStories() {
     let server = [];
     try {
-      const data = await api("/api/stories");
+      const data = await api("/api/stories?profile=" + activeProfile);
       server = data.stories || [];
     } catch (_) {}
     let local = [];
     try { local = await idbAll(); } catch (_) {}
+    // old cached stories (no profile) belong to profile 1
+    local = local.filter((s) => (s.profile || "p1") === activeProfile);
     renderList(server, local);
   }
 
@@ -403,6 +429,7 @@
       title: meta.title,
       created: meta.created || new Date().toISOString(),
       words: meta.words,
+      profile: meta.profile || activeProfile,
       blob,
     });
   }
@@ -419,7 +446,10 @@
         await cacheStory(s, blob);
         url = URL.createObjectURL(blob);
       }
+      liveReset();
       playerCard.classList.remove("hidden");
+      showFullPlayer();
+      downloadBtn.classList.remove("hidden");
       resultTitle.textContent = s.title || "Your story";
       player.src = url;
       downloadBtn.href = url;
@@ -464,6 +494,7 @@
     const el = live.el[live.slot];
     el.onended = null;
     if (el.src !== live.urls[n]) el.src = live.urls[n];
+    try { el.currentTime = 0; } catch (_) {}
     live.cur = n;
     live.waiting = false;
     el.onended = () => liveNext();
@@ -502,6 +533,41 @@
     else { el.pause(); liveToggle.textContent = "▶️ Play"; }
   });
 
+  const restartBtn = $("restart-btn");
+
+  function showFullPlayer() {
+    // Whole-story MP3 mode: native controls + Start over (live Pause/Play hidden)
+    live.el.forEach((e) => { if (e) { e.onended = null; e.pause(); } });
+    liveControls.classList.remove("hidden");
+    liveToggle.classList.add("hidden");
+    nowPlaying.classList.add("hidden");
+    player.classList.remove("hidden");
+  }
+
+  function showLivePlayer() {
+    liveControls.classList.remove("hidden");
+    liveToggle.classList.remove("hidden");
+    nowPlaying.classList.remove("hidden");
+    player.pause();
+    player.classList.add("hidden");
+  }
+
+  restartBtn.addEventListener("click", () => {
+    if (!player.classList.contains("hidden")) {
+      // full-story player
+      try { player.currentTime = 0; } catch (_) {}
+      player.play().catch(() => {});
+      setStatus("Starting over from the beginning! ⏮️", "ok");
+      return;
+    }
+    if (!live.urls[1]) return;  // nothing to play yet
+    live.el.forEach((e) => { if (e) { e.onended = null; e.pause(); } });
+    live.ended = false;
+    live.waiting = false;
+    nowPlaying.textContent = "Starting over! ⏮️";
+    livePlay(1);
+  });
+
   async function liveFetchPart(n) {
     if (live.urls[n] || live.fetching[n]) return;
     live.fetching[n] = true;
@@ -512,10 +578,8 @@
       live.urls[n] = URL.createObjectURL(blob);
       if (n === 1) {
         playerCard.classList.remove("hidden");
-        liveControls.classList.remove("hidden");
-        player.classList.add("hidden");
+        showLivePlayer();
         downloadBtn.classList.add("hidden");
-        nowPlaying.classList.remove("hidden");
         livePlay(1);
       } else if (live.waiting && live.cur + 1 === n) {
         livePlay(n);
@@ -558,7 +622,7 @@
           stopTween();
           makeBtn.disabled = false;
           live.finished = true;
-          const meta = { id: j.story_id, title: j.title || "Story", created: new Date().toISOString() };
+          const meta = { id: j.story_id, title: j.title || "Story", created: new Date().toISOString(), profile: j.profile || jobProfile };
           const blob = await fetchAudioBlob(j.story_id);
           await cacheStory(meta, blob);
           const url = URL.createObjectURL(blob);
@@ -572,9 +636,7 @@
             player.src = url;
             setStatus("All done! The whole story is saved 💾", "ok");
           } else {
-            liveControls.classList.add("hidden");
-            nowPlaying.classList.add("hidden");
-            player.classList.remove("hidden");
+            showFullPlayer();
             player.src = url;
             setStatus("All done! Press play 🎶", "ok");
           }
@@ -602,6 +664,7 @@
       return;
     }
     makeBtn.disabled = true;
+    jobProfile = activeProfile;
     liveReset();
     livePrime();
     playerCard.classList.add("hidden");
@@ -623,6 +686,7 @@
           language,
           voice: selectedVoice || "ava",
           length: storyLength,
+          profile: activeProfile,
         }),
       });
       await pollJob(job_id);
@@ -639,18 +703,93 @@
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
 
+  function syncLengthButtons() {
+    document.querySelectorAll("#length-group button").forEach((b) => {
+      b.classList.toggle("active", b.dataset.length === storyLength);
+    });
+  }
   document.querySelectorAll("#length-group button").forEach((btn) => {
-    if (btn.dataset.length === storyLength) {
-      document.querySelectorAll("#length-group button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-    }
     btn.addEventListener("click", () => {
-      document.querySelectorAll("#length-group button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
       storyLength = btn.dataset.length;
-      localStorage.setItem("storyLength", storyLength);
+      localStorage.setItem(pKey("storyLength"), storyLength);
+      syncLengthButtons();
     });
   });
+  syncLengthButtons();
+
+  // ---- profile picker ----
+  const profileRow = $("profile-row");
+  const profileEdit = $("profile-edit");
+  const profileName = $("profile-name");
+  const emojiGrid = $("emoji-grid");
+  const EMOJIS = ["🦄", "🐱", "🐶", "🦊", "🐼", "🐰", "🦋", "🐢", "🦖", "🐬", "🌈", "⭐", "🌸", "🚀", "👑", "🐸"];
+  let editingId = null;
+  let editingEmoji = "";
+
+  function saveProfiles() { localStorage.setItem("storyProfiles", JSON.stringify(profiles)); }
+
+  function renderProfiles() {
+    profileRow.innerHTML = "";
+    profiles.forEach((p) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "profile-btn" + (p.id === activeProfile ? " active" : "");
+      const em = document.createElement("span"); em.className = "p-emoji"; em.textContent = p.emoji;
+      const nm = document.createElement("span"); nm.textContent = p.name;
+      const ed = document.createElement("span"); ed.className = "p-edit"; ed.textContent = "✏️";
+      ed.setAttribute("role", "button"); ed.title = "Change name";
+      ed.addEventListener("click", (e) => { e.stopPropagation(); openEditor(p.id); });
+      b.append(em, nm, ed);
+      b.addEventListener("click", () => switchProfile(p.id));
+      profileRow.appendChild(b);
+    });
+  }
+
+  function openEditor(id) {
+    const p = profiles.find((x) => x.id === id);
+    editingId = id; editingEmoji = p.emoji;
+    profileName.value = p.name;
+    emojiGrid.innerHTML = "";
+    EMOJIS.forEach((e) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = e;
+      if (e === editingEmoji) b.className = "active";
+      b.addEventListener("click", () => {
+        editingEmoji = e;
+        emojiGrid.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.textContent === e));
+      });
+      emojiGrid.appendChild(b);
+    });
+    profileEdit.classList.remove("hidden");
+  }
+  $("profile-cancel").addEventListener("click", () => { profileEdit.classList.add("hidden"); editingId = null; });
+  $("profile-save").addEventListener("click", () => {
+    const p = profiles.find((x) => x.id === editingId);
+    if (p) {
+      p.name = profileName.value.trim().slice(0, 16) || p.name;
+      p.emoji = editingEmoji || p.emoji;
+      saveProfiles();
+    }
+    profileEdit.classList.add("hidden"); editingId = null;
+    renderProfiles();
+  });
+
+  async function switchProfile(id) {
+    if (id === activeProfile) return;
+    if (makeBtn.disabled) { setStatus("Wait until this story is made, then switch 🙂", "busy"); return; }
+    activeProfile = id;
+    localStorage.setItem("activeProfile", id);
+    selectedVoice = localStorage.getItem(pKey("storyVoice")) || "ava";
+    if (voices.length && !voices.some((v) => v.id === selectedVoice)) selectedVoice = "ava";
+    storyLength = localStorage.getItem(pKey("storyLength")) || "medium";
+    renderProfiles();
+    renderVoices();
+    syncLengthButtons();
+    const p = profiles.find((x) => x.id === id);
+    setStatus("Hi " + p.name + " " + p.emoji + "! Type your idea, then press Make My Story!");
+    await refreshStories();
+  }
+  renderProfiles();
 
   checkSession();
 })();

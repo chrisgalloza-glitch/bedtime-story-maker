@@ -94,8 +94,38 @@ def test_progressive_endpoints():
     print("progressive OK first part after", round(first, 2), "s; max parallel TTS", active["max"])
 
 
+def test_profiles_tag_and_filter():
+    import threading
+
+    from app import jobs as jobs_mod
+
+    async def fake_edge(text, voice, rate):
+        return TINY
+
+    with patch.object(story_mod, "_synth_chunk_edge", side_effect=fake_edge):
+        c = TestClient(app)
+        c.post("/api/login", json={"pin": "4821"})
+        ids = {}
+        for prof in ("p1", "p2"):
+            j = c.post("/api/stories", json={"idea": "a cat", "length": "short", "profile": prof}).json()
+            st = c.get(f"/api/jobs/{j['job_id']}").json()
+            assert st["status"] == "done" and st["profile"] == prof, st
+            ids[prof] = st["story_id"]
+        p1 = {m["id"] for m in c.get("/api/stories?profile=p1").json()["stories"]}
+        p2 = {m["id"] for m in c.get("/api/stories?profile=p2").json()["stories"]}
+        assert ids["p1"] in p1 and ids["p1"] not in p2
+        assert ids["p2"] in p2 and ids["p2"] not in p1
+        # bogus profile falls back to p1; unfiltered list has both
+        j = c.post("/api/stories", json={"idea": "x y", "length": "short", "profile": "zz"}).json()
+        assert c.get(f"/api/jobs/{j['job_id']}").json()["profile"] == "p1"
+        allids = {m["id"] for m in c.get("/api/stories").json()["stories"]}
+        assert {ids["p1"], ids["p2"]} <= allids
+    print("profiles OK")
+
+
 if __name__ == "__main__":
     test_plan_words()
     test_parse_outline_fallback()
     test_progressive_endpoints()
+    test_profiles_tag_and_filter()
     print("== PIPELINE TESTS PASSED ==")

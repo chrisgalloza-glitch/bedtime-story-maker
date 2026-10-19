@@ -273,3 +273,28 @@ audio {
   100% { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: 0; }
 }
 .lang button small { font-weight: 400; opacity: .8; font-size: .75em; }
+
+/* ---- child profiles ---- */
+.profile-row { display: flex; gap: 12px; }
+.profile-btn {
+  flex: 1; position: relative; border: 3px solid transparent; border-radius: var(--radius);
+  background: var(--entry); color: var(--text); padding: 14px 8px; font: inherit;
+  font-size: 1.15rem; font-weight: 800; cursor: pointer; text-align: center;
+}
+.profile-btn .p-emoji { display: block; font-size: 2.6rem; line-height: 1.1; }
+.profile-btn.active { border-color: var(--warn); background: linear-gradient(135deg, #3d2c8d, #e94560); }
+.profile-btn .p-edit {
+  position: absolute; top: 6px; right: 6px; font-size: 1rem; background: rgba(0,0,0,.35);
+  border: 0; border-radius: 50%; width: 34px; height: 34px; color: #fff; cursor: pointer;
+}
+.profile-edit { margin-top: 12px; }
+.profile-edit input {
+  width: 100%; font: inherit; font-size: 1.1rem; padding: 12px; border-radius: 12px;
+  border: 0; background: var(--entry); color: var(--text); margin-bottom: 10px;
+}
+.emoji-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.emoji-grid button {
+  font-size: 1.8rem; background: var(--entry); border: 3px solid transparent;
+  border-radius: 12px; padding: 4px 8px; cursor: pointer;
+}
+.emoji-grid button.active { border-color: var(--warn); }

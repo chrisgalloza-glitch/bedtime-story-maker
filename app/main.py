@@ -56,6 +56,7 @@ class StoryBody(BaseModel):
     language: str = Field(default="English", max_length=32)
     voice: str = Field(default="ava", max_length=32)
     length: str = Field(default="medium", max_length=16)
+    profile: str = Field(default="p1", max_length=8)
 
 
 @app.get("/api/health")
@@ -152,7 +153,11 @@ def start_story(body: StoryBody, request: Request, background: BackgroundTasks):
         )
     voice = get_voice(body.voice)
     job = jobs_mod.create_job(
-        idea, body.language, voice.id, pipeline_mod.normalize_length(body.length)
+        idea,
+        body.language,
+        voice.id,
+        pipeline_mod.normalize_length(body.length),
+        _profile(body.profile),
     )
     background.add_task(jobs_mod.run_job, job.id)
     return {"job_id": job.id, "voice": voice.id}
@@ -176,15 +181,24 @@ def job_status(job_id: str, request: Request):
         "title": job.title,
         "voice": job.voice_id,
         "length": job.length,
+        "profile": job.profile,
         "parts_total": job.parts_total,
         "parts_ready": list(job.parts_ready),
     }
 
 
+def _profile(p: str | None) -> str:
+    return p if p in ("p1", "p2") else "p1"
+
+
 @app.get("/api/stories")
-def list_stories(request: Request):
+def list_stories(request: Request, profile: str | None = Query(default=None)):
     require_auth(request)
-    return {"stories": story_mod.list_stories()}
+    items = story_mod.list_stories()
+    if profile:
+        want = _profile(profile)
+        items = [m for m in items if (m.get("profile") or "p1") == want]
+    return {"stories": items}
 
 
 @app.get("/api/stories/{story_id}/audio")
