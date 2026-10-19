@@ -24,7 +24,10 @@ LENGTHS = {
 }
 FIRST_PART_WORDS = 300
 LLM_CONCURRENCY = 6
+MOCK_DELAYS: list[float] | None = None  # tests: per-part fake writing time
 TTS_CONCURRENCY = 3
+# Grok tends to write ~55-60% of the requested words per part, so ask for more.
+WORD_ASK_FACTOR = 1.7
 
 
 def normalize_length(length: str | None) -> str:
@@ -228,6 +231,7 @@ async def produce(
     llm_sem = asyncio.Semaphore(LLM_CONCURRENCY)
     tts_sem = asyncio.Semaphore(TTS_CONCURRENCY)
     tts_state: dict = {}
+    first_tts_started = asyncio.Event()  # part 1 always gets the first recording slot
 
     weights = [w / sum(words) for w in words]
     done_frac = [0.0] * n  # 0..1 per part (text 0.4, audio 0.6)
@@ -255,18 +259,41 @@ async def produce(
 
     async def write_and_record(i: int) -> None:
         if config.MOCK_LLM:
-            await asyncio.sleep(0.15 * (i + 1))
+            await asyncio.sleep(MOCK_DELAYS[i] if MOCK_DELAYS else 0.15 * (i + 1))
             text = _mock_part(i, n, spanish)
         else:
-            system, user = _part_prompt(outline, i, n, words[i], idea, spanish)
-            text = clean_part(await _llm_retry(llm_sem, system, user, int(words[i] * 2.2) + 400))
+            ask = int(words[i] * WORD_ASK_FACTOR)
+            system, user = _part_prompt(outline, i, n, ask, idea, spanish)
+            text = clean_part(await _llm_retry(llm_sem, system, user, int(ask * 2.2) + 400))
+            # later parts: top up once if far too short (part 1 stays fast)
+            if i > 0 and S.word_count(text) < 0.7 * words[i]:
+                more = (
+                    "Continúa esta misma parte desde donde quedó, sin repetir, unas "
+                    if spanish else
+                    "Continue this same part from where it stopped, without repeating, about "
+                ) + f"{words[i] - S.word_count(text) + 100} " + (
+                    "palabras más. No cierres el cuento." if spanish and i < n - 1 else
+                    "palabras más." if spanish else
+                    "more words. Do not end the story." if i < n - 1 else "more words."
+                ) + "\n\n" + text[-2500:]
+                try:
+                    extra = clean_part(await _llm_retry(llm_sem, system, more, 2000))
+                    if i < n - 1:
+                        extra = re.sub(r"\s*(The end\.?|Fin\.?)\s*$", "", extra, flags=re.I)
+                    text = text.rstrip() + "\n\n" + extra
+                except Exception:  # noqa: BLE001
+                    pass
         if len(text) < 20:
             raise RuntimeError(f"Part {i + 1} came back empty.")
         texts[i] = text
         done_frac[i] = 0.4
         on_update(progress=f"Recording part {i + 1} of {n}…", percent=pct())
         spoken = S.spoken_text_part(text, title) if i == 0 else text
+        if i > 0:
+            await first_tts_started.wait()
         async with tts_sem:
+            if i == 0:
+                first_tts_started.set()
             audio = await synth_part(spoken, voice.id, language, tts_state)
         (folder / f"part-{i + 1}.mp3").write_bytes(audio)
         done_frac[i] = 1.0
@@ -282,6 +309,7 @@ async def produce(
     try:
         await asyncio.gather(*tasks)
     except Exception:
+        first_tts_started.set()
         for t in tasks:
             t.cancel()
         raise

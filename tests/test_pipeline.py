@@ -94,6 +94,32 @@ def test_progressive_endpoints():
     print("progressive OK first part after", round(first, 2), "s; max parallel TTS", active["max"])
 
 
+def test_part1_recorded_first_even_if_written_last():
+    import asyncio
+    import tempfile as tf
+
+    order = []
+
+    async def fake_edge(text, voice, rate):
+        order.append("title" if "Little Duck" in text else "other")
+        await asyncio.sleep(0.2)
+        return TINY
+
+    ready = []
+    with patch.object(story_mod, "_synth_chunk_edge", side_effect=fake_edge), patch.object(
+        pipeline, "MOCK_DELAYS", [0.8, 0.05, 0.05, 0.05, 0.05]
+    ):
+        asyncio.run(
+            pipeline.produce(
+                "duck", "English", "ava", "medium", Path(tf.mkdtemp()),
+                lambda **kw: ready.append(kw["part_ready"]) if "part_ready" in kw else None,
+            )
+        )
+    assert order[0] == "title", order  # part 1 (starts with the title) recorded first
+    assert ready[0] == 1 and sorted(ready) == [1, 2, 3, 4, 5], ready
+    print("part 1 priority OK", ready)
+
+
 def test_profiles_tag_and_filter():
     import threading
 
@@ -127,5 +153,6 @@ if __name__ == "__main__":
     test_plan_words()
     test_parse_outline_fallback()
     test_progressive_endpoints()
+    test_part1_recorded_first_even_if_written_last()
     test_profiles_tag_and_filter()
     print("== PIPELINE TESTS PASSED ==")
