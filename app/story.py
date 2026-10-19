@@ -509,6 +509,11 @@ def spoken_text(story: str, title: str) -> str:
     return f"{title}.\n\n{body}"
 
 
+def spoken_text_part(text: str, title: str) -> str:
+    """First part of a progressive story: title then body."""
+    return f"{title}.\n\n{text.strip()}"
+
+
 def save_story_files(story_id: str, title: str, story: str, audio: bytes) -> dict:
     folder = config.STORIES_DIR / story_id
     folder.mkdir(parents=True, exist_ok=True)

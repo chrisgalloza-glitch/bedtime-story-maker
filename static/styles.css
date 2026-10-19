@@ -272,3 +272,4 @@ audio {
   0% { transform: translate(0,0) scale(0.3); opacity: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: 0; }
 }
+.lang button small { font-weight: 400; opacity: .8; font-size: .75em; }

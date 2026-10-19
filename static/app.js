@@ -22,6 +22,7 @@
   const progressTrack = $("progress-track");
   const celebrate = $("celebrate");
   let language = "English";
+  let storyLength = localStorage.getItem("storyLength") || "medium";
   let selectedVoice = localStorage.getItem("storyVoice") || "ava";
   let voices = [];
   let pollTimer = null;
@@ -122,28 +123,16 @@
   function startTween() {
     if (tweenTimer) return;
     tweenTimer = setInterval(() => {
-      // Client-side ease while writing toward 38%
-      if (writingStartedAt && targetPercent < 40 && targetPercent >= 3) {
-        const elapsed = Date.now() - writingStartedAt;
-        const eased = Math.min(38, serverWritingFloor + elapsed / 120000 * 28);
-        if (eased > targetPercent) targetPercent = eased;
-      }
-      // Within a speaking part, nudge forward using previous part duration
-      if (lastSpeakPart != null && targetPercent >= 40 && targetPercent < 99) {
-        const elapsed = Date.now() - partStartedAt;
-        const frac = Math.min(0.92, elapsed / Math.max(8000, lastPartDurationMs));
-        // soft cap: don't exceed next part boundary estimated from server target + small bump
-        const bump = frac * 2.5;
-        if (displayPercent < targetPercent + bump && displayPercent < 99) {
-          targetPercent = Math.max(targetPercent, Math.min(99, targetPercent + bump * 0.15));
-        }
+      // gentle creep so the bar never looks stuck (stays just ahead of the server value)
+      const ceiling = Math.min(98, targetPercent + 2);
+      if (targetPercent >= 1 && targetPercent < 98 && displayPercent >= targetPercent && displayPercent < ceiling) {
+        displayPercent += 0.02;
+        applyBarVisual(displayPercent);
+        return;
       }
       if (displayPercent < targetPercent) {
         const step = Math.max(0.4, (targetPercent - displayPercent) * 0.18);
         displayPercent = Math.min(targetPercent, displayPercent + step);
-        applyBarVisual(displayPercent);
-      } else if (displayPercent > targetPercent) {
-        // never go backwards visually either
         applyBarVisual(displayPercent);
       }
     }, 80);
@@ -159,25 +148,10 @@
   function setProgressFromJob(j) {
     const pct = typeof j.percent === "number" ? j.percent : 0;
     if (pct >= targetPercent) targetPercent = pct;
-    if (j.status === "writing") {
-      if (!writingStartedAt) writingStartedAt = Date.now();
-      serverWritingFloor = Math.max(serverWritingFloor, pct);
-    }
-    if (j.status === "speaking") {
-      writingStartedAt = 0;
-      if (j.speak_part != null && j.speak_part !== lastSpeakPart) {
-        if (lastSpeakPart != null && partStartedAt) {
-          lastPartDurationMs = Math.max(8000, Date.now() - partStartedAt);
-        }
-        lastSpeakPart = j.speak_part;
-        partStartedAt = Date.now();
-      }
-    }
     if (j.status === "error") {
       progressWrap.classList.add("error");
       progressWrap.classList.remove("done");
-      targetPercent = Math.max(targetPercent, pct);
-      displayPercent = targetPercent;
+      displayPercent = Math.max(displayPercent, targetPercent);
       applyBarVisual(displayPercent);
       stopTween();
     }
@@ -462,13 +436,119 @@
     downloadBtn.click();
   }
 
+  // ---------- progressive (part by part) playback ----------
+  const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
+  const live = { active: false, jobId: null, storyId: null, total: 0, urls: {}, fetching: {}, cur: 0, waiting: false, started: false, el: [null, null], slot: 0, finished: false };
+  const nowPlaying = $("now-playing");
+  const liveToggle = $("live-toggle");
+  const liveControls = $("live-controls");
+
+  function liveReset() {
+    Object.values(live.urls).forEach((u) => URL.revokeObjectURL(u));
+    live.el.forEach((e) => { if (e) { e.pause(); e.removeAttribute("src"); } });
+    Object.assign(live, { active: false, jobId: null, storyId: null, total: 0, urls: {}, fetching: {}, cur: 0, waiting: false, started: false, slot: 0, finished: false });
+  }
+
+  function livePrime() {
+    // Called inside the Make tap so Android lets us play later without another tap.
+    live.el = [new Audio(), new Audio()];
+    live.el.forEach((e) => { e.playsInline = true; e.preload = "auto"; e.src = SILENT_WAV; e.play().catch(() => {}); });
+  }
+
+  function liveLabel() {
+    if (live.finished) return "Playing: part " + live.cur + " of " + live.total;
+    return "Playing part " + live.cur + " of " + (live.total || "?") + " — the rest is still being made";
+  }
+
+  function livePlay(n) {
+    const el = live.el[live.slot];
+    el.onended = null;
+    if (el.src !== live.urls[n]) el.src = live.urls[n];
+    live.cur = n;
+    live.waiting = false;
+    el.onended = () => liveNext();
+    el.play().then(() => {
+      if (!live.started) { live.started = true; nowPlaying.textContent = "Starting now! 🎶"; setTimeout(() => { if (live.active) nowPlaying.textContent = liveLabel(); }, 3000); }
+      else nowPlaying.textContent = liveLabel();
+      liveToggle.textContent = "⏸ Pause";
+    }).catch(() => {
+      nowPlaying.textContent = "Tap Play to start the story";
+      liveToggle.textContent = "▶️ Play";
+    });
+    // preload the next part on the other element
+    const other = live.el[1 - live.slot];
+    if (live.urls[n + 1] && other.src !== live.urls[n + 1]) other.src = live.urls[n + 1];
+    live.slot = 1 - live.slot;
+  }
+
+  function liveNext() {
+    const n = live.cur + 1;
+    if (live.total && n > live.total) { liveEnded(); return; }
+    if (live.urls[n]) livePlay(n);
+    else { live.waiting = true; nowPlaying.textContent = "Next part coming… 🌟"; }
+  }
+
+  function liveEnded() {
+    nowPlaying.textContent = "The end 🌙 Sweet dreams!";
+    liveToggle.textContent = "🔁 Hear it again";
+    live.cur = 0; live.ended = true;
+  }
+
+  liveToggle.addEventListener("click", () => {
+    if (live.ended || (live.cur === 0 && live.urls[1])) { live.ended = false; livePlay(1); return; }
+    const el = live.el[1 - live.slot];  // the element currently playing
+    if (!el || !el.src) return;
+    if (el.paused) { el.play().catch(() => {}); liveToggle.textContent = "⏸ Pause"; }
+    else { el.pause(); liveToggle.textContent = "▶️ Play"; }
+  });
+
+  async function liveFetchPart(n) {
+    if (live.urls[n] || live.fetching[n]) return;
+    live.fetching[n] = true;
+    try {
+      const res = await fetch("/api/stories/" + live.storyId + "/parts/" + n + "/audio", { credentials: "same-origin" });
+      if (!res.ok) throw new Error("part " + n);
+      const blob = await res.blob();
+      live.urls[n] = URL.createObjectURL(blob);
+      if (n === 1) {
+        playerCard.classList.remove("hidden");
+        liveControls.classList.remove("hidden");
+        player.classList.add("hidden");
+        downloadBtn.classList.add("hidden");
+        nowPlaying.classList.remove("hidden");
+        livePlay(1);
+      } else if (live.waiting && live.cur + 1 === n) {
+        livePlay(n);
+      } else if (live.cur + 1 === n) {
+        const other = live.el[live.slot];  // idle element: preload for gapless handoff
+        if (other) other.src = live.urls[n];
+      }
+    } catch (_) {
+      // will retry on the next poll
+    } finally {
+      live.fetching[n] = false;
+    }
+  }
+
   async function pollJob(jobId) {
     clearInterval(pollTimer);
+    live.active = true; live.jobId = jobId;
     const tick = async () => {
       try {
         const j = await api("/api/jobs/" + jobId);
         setProgressFromJob(j);
-        setStatus(j.progress || j.status, j.status === "error" ? "err" : "busy");
+        live.storyId = j.story_id || live.storyId;
+        live.total = j.parts_total || live.total;
+        if (j.title) resultTitle.textContent = j.title;
+        if (live.storyId) {
+          // fetch ready parts in order (part 1 first)
+          for (const n of (j.parts_ready || [])) { await liveFetchPart(n); }
+        }
+        if (!live.started && j.status !== "error") {
+          setStatus(j.progress || j.status, "busy");
+        } else if (j.status !== "done" && j.status !== "error") {
+          setStatus("Your story is playing while the rest is being made 🎧", "ok");
+        }
         if (j.status === "done" && j.story_id) {
           clearInterval(pollTimer);
           targetPercent = 100;
@@ -477,21 +557,27 @@
           burstCelebrate();
           stopTween();
           makeBtn.disabled = false;
+          live.finished = true;
+          const meta = { id: j.story_id, title: j.title || "Story", created: new Date().toISOString() };
           const blob = await fetchAudioBlob(j.story_id);
-          const meta = {
-            id: j.story_id,
-            title: j.title || "Story",
-            created: new Date().toISOString(),
-          };
           await cacheStory(meta, blob);
           const url = URL.createObjectURL(blob);
           playerCard.classList.remove("hidden");
           resultTitle.textContent = meta.title;
-          player.src = url;
           downloadBtn.href = url;
+          downloadBtn.classList.remove("hidden");
           downloadBtn.download = (meta.title.replace(/[^\w\- ]+/g, "").slice(0, 40) || "story") + ".mp3";
-          setStatus("All done! Playing now…", "ok");
-          player.play().catch(() => {});
+          if (live.started && !live.ended) {
+            // keep the live parts playing; full MP3 is saved and ready to download
+            player.src = url;
+            setStatus("All done! The whole story is saved 💾", "ok");
+          } else {
+            liveControls.classList.add("hidden");
+            nowPlaying.classList.add("hidden");
+            player.classList.remove("hidden");
+            player.src = url;
+            setStatus("All done! Press play 🎶", "ok");
+          }
           hideProgressBarSoon();
           await refreshStories();
         } else if (j.status === "error") {
@@ -506,7 +592,7 @@
       }
     };
     await tick();
-    pollTimer = setInterval(tick, 2500);
+    pollTimer = setInterval(tick, 1500);
   }
 
   makeBtn.addEventListener("click", async () => {
@@ -516,7 +602,10 @@
       return;
     }
     makeBtn.disabled = true;
+    liveReset();
+    livePrime();
     playerCard.classList.add("hidden");
+    player.pause();
     displayPercent = 0;
     targetPercent = 1;
     writingStartedAt = Date.now();
@@ -525,7 +614,7 @@
     showProgressBar();
     applyBarVisual(0);
     startTween();
-    setStatus("Starting… this can take a few minutes", "busy");
+    setStatus("Starting… your story will begin in a minute!", "busy");
     try {
       const { job_id } = await api("/api/stories", {
         method: "POST",
@@ -533,6 +622,7 @@
           idea: text,
           language,
           voice: selectedVoice || "ava",
+          length: storyLength,
         }),
       });
       await pollJob(job_id);
@@ -548,6 +638,19 @@
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
+
+  document.querySelectorAll("#length-group button").forEach((btn) => {
+    if (btn.dataset.length === storyLength) {
+      document.querySelectorAll("#length-group button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    }
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#length-group button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      storyLength = btn.dataset.length;
+      localStorage.setItem("storyLength", storyLength);
+    });
+  });
 
   checkSession();
 })();

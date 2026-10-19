@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import config
 from . import jobs as jobs_mod
+from . import pipeline as pipeline_mod
 from . import previews as previews_mod
 from . import story as story_mod
 from .voices import get_voice, list_voices_public
@@ -53,6 +55,7 @@ class StoryBody(BaseModel):
     idea: str = Field(min_length=2, max_length=2000)
     language: str = Field(default="English", max_length=32)
     voice: str = Field(default="ava", max_length=32)
+    length: str = Field(default="medium", max_length=16)
 
 
 @app.get("/api/health")
@@ -148,7 +151,9 @@ def start_story(body: StoryBody, request: Request, background: BackgroundTasks):
             429, "A story is already being made. Please wait until it finishes."
         )
     voice = get_voice(body.voice)
-    job = jobs_mod.create_job(idea, body.language, voice.id)
+    job = jobs_mod.create_job(
+        idea, body.language, voice.id, pipeline_mod.normalize_length(body.length)
+    )
     background.add_task(jobs_mod.run_job, job.id)
     return {"job_id": job.id, "voice": voice.id}
 
@@ -170,6 +175,9 @@ def job_status(job_id: str, request: Request):
         "story_id": job.story_id,
         "title": job.title,
         "voice": job.voice_id,
+        "length": job.length,
+        "parts_total": job.parts_total,
+        "parts_ready": list(job.parts_ready),
     }
 
 
@@ -191,6 +199,19 @@ def get_audio(story_id: str, request: Request):
         media_type="audio/mpeg",
         filename=f"{story_id}.mp3",
     )
+
+
+@app.get("/api/stories/{story_id}/parts/{n}/audio")
+def get_part_audio(story_id: str, n: int, request: Request):
+    require_auth(request)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,40}", story_id) or not 1 <= n <= 20:
+        raise HTTPException(404, "Part not found.")
+    path = config.STORIES_DIR / story_id / f"part-{n}.mp3"
+    job = next((j for j in jobs_mod._jobs.values() if j.story_id == story_id), None)
+    # only serve parts the job has finished writing (file may be mid-write)
+    if not path.is_file() or (job is not None and n not in job.parts_ready):
+        raise HTTPException(404, "Part not ready yet.")
+    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/stories/{story_id}/text")

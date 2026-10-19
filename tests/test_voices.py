@@ -77,7 +77,7 @@ def test_xai_mocked_and_fallback():
                     text,
                     voice_id="luna",
                     language="English",
-                    progress=progress_msgs.append,
+                    progress=lambda m, **k: progress_msgs.append(m),
                 )
             )
     assert len(audio) > 2000
@@ -114,7 +114,7 @@ def test_unknown_voice_falls_to_ava():
                 "Soft night. The end.",
                 voice_id="totally-unknown",
                 language="English",
-                progress=msgs.append,
+                progress=lambda m, **k: msgs.append(m),
             )
         )
     assert len(audio) > 1000

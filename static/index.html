@@ -38,6 +38,13 @@
       <label class="big">Who should read?</label>
       <div class="voice-grid" id="voice-grid" aria-label="Choose a voice"></div>
 
+      <label class="big">How long?</label>
+      <div class="lang" id="length-group" role="group">
+        <button type="button" data-length="short">🌙 Short<br><small>~10 min</small></button>
+        <button type="button" class="active" data-length="medium">🌙🌙 Medium<br><small>~15 min</small></button>
+        <button type="button" data-length="long">🌙🌙🌙 Long<br><small>~23 min</small></button>
+      </div>
+
       <label class="big" for="idea">Your story idea</label>
       <textarea id="idea" placeholder="Example: a little duck who finds a sparkly pond and makes a new friend…"></textarea>
       <p class="hint">🎤 Tip: tap the microphone on your keyboard to talk your idea.</p>
@@ -60,7 +67,11 @@
 
     <div class="card hidden" id="player-card">
       <label class="big" id="result-title">Your story</label>
-      <audio id="player" controls playsinline></audio>
+      <p class="status ok" id="now-playing">Starting now!</p>
+      <div class="row" id="live-controls">
+        <button class="btn" id="live-toggle" type="button" style="flex:1">⏸ Pause</button>
+      </div>
+      <audio id="player" controls playsinline class="hidden"></audio>
       <div class="row">
         <a class="btn secondary" id="download-btn" href="#" download>⬇ Download MP3</a>
       </div>

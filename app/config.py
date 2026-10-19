@@ -18,6 +18,7 @@ XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4.3")
 
 VOICE = "en-US-AvaMultilingualNeural"
 RATE = "-10%"
+DEFAULT_LENGTH = "medium"
 TARGET_MIN_WORDS = 2800
 TARGET_MAX_WORDS = 3300
 TTS_CHUNK_CHARS = 4500

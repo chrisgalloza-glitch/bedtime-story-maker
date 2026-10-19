@@ -19,6 +19,9 @@ class Job:
     idea: str
     language: str
     voice_id: str = "ava"
+    length: str = "medium"
+    parts_total: int = 0
+    parts_ready: list = field(default_factory=list)
     status: str = "queued"  # queued | writing | speaking | done | error
     progress: str = "Waiting to start…"
     percent: int = 0
@@ -35,13 +38,15 @@ _lock = threading.Lock()
 _MAX_JOBS = 40
 
 
-def create_job(idea: str, language: str, voice_id: str = "ava") -> Job:
+def create_job(idea: str, language: str, voice_id: str = "ava", length: str = "medium") -> Job:
     voice = get_voice(voice_id)
     job = Job(
         id=secrets.token_urlsafe(10),
         idea=idea,
         language=language,
         voice_id=voice.id,
+        length=length,
+        story_id=secrets.token_urlsafe(8),
         percent=1,
         progress="Waiting to start…",
     )
@@ -65,8 +70,15 @@ def _set(job: Job, **kwargs: Any) -> None:
     with _lock:
         for k, v in kwargs.items():
             if k == "percent" and v is not None:
-                # Never go backwards
-                job.percent = max(int(job.percent), int(v))
+                job.percent = max(int(job.percent), int(v))  # never backwards
+            elif k == "part_ready":
+                if v not in job.parts_ready:
+                    job.parts_ready.append(v)
+                    job.parts_ready.sort()
+            elif k == "status" and job.status in ("done", "error"):
+                continue
+            elif k == "status" and job.status == "speaking" and v == "writing":
+                continue
             else:
                 setattr(job, k, v)
 
@@ -75,73 +87,31 @@ def run_job(job_id: str) -> None:
     job = get_job(job_id)
     if not job:
         return
-
-    def progress(
-        msg: str,
-        percent: int | None = None,
-        part: int | None = None,
-        total: int | None = None,
-        **_extra: Any,
-    ) -> None:
-        updates: dict[str, Any] = {"progress": msg}
-        if percent is not None:
-            updates["percent"] = percent
-        if part is not None:
-            updates["speak_part"] = part
-        if total is not None:
-            updates["speak_total"] = total
-        _set(job, **updates)
-
     try:
-        voice = get_voice(job.voice_id)
-        _set(
-            job,
-            status="writing",
-            progress="Writing your story…",
-            percent=3,
-            speak_part=None,
-            speak_total=None,
-        )
-        text = story_mod.generate_story(job.idea, job.language, progress=progress)
-        title = story_mod.extract_title(text, job.language)
-        spoken = story_mod.spoken_text(text, title)
+        import json
+        from . import config, pipeline
 
-        _set(
-            job,
-            status="speaking",
-            progress=f"Recording {voice.name}'s voice…",
-            percent=40,
-            title=title,
-        )
-        audio = asyncio.run(
-            story_mod.synthesize_story(
-                spoken,
-                voice_id=job.voice_id,
-                language=job.language,
-                progress=progress,
+        folder = config.STORIES_DIR / job.story_id
+
+        def on_update(**kw: Any) -> None:
+            _set(job, **kw)
+
+        result = asyncio.run(
+            pipeline.produce(
+                job.idea, job.language, job.voice_id, job.length, folder, on_update
             )
         )
-
-        story_id = secrets.token_urlsafe(8)
-        meta = story_mod.save_story_files(story_id, title, text, audio)
+        title = result["title"]
+        meta = story_mod.save_story_files(
+            job.story_id, title, result["text"], result["audio"]
+        )
         try:
-            import json
-            from . import config
-
-            meta_path = config.STORIES_DIR / story_id / "meta.json"
             meta["voice_id"] = job.voice_id
-            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            meta["length"] = job.length
+            (folder / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             pass
-
-        _set(
-            job,
-            status="done",
-            progress="All done!",
-            percent=100,
-            story_id=story_id,
-            title=title,
-        )
+        _set(job, status="done", progress="All done!", percent=100, title=title)
     except Exception as e:
         _set(
             job,
