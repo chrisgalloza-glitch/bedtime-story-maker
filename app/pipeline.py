@@ -26,8 +26,10 @@ FIRST_PART_WORDS = 300
 LLM_CONCURRENCY = 6
 MOCK_DELAYS: list[float] | None = None  # tests: per-part fake writing time
 TTS_CONCURRENCY = 3
-# Grok tends to write ~55-60% of the requested words per part, so ask for more.
-WORD_ASK_FACTOR = 1.7
+# Live test: Grok wrote ~1/3 of the requested words per part, so ask for more
+# and top later parts up (twice at most) when still short.
+WORD_ASK_FACTOR = 2.2
+TOPUP_ROUNDS = 2
 
 
 def normalize_length(length: str | None) -> str:
@@ -157,6 +159,33 @@ def clean_part(text: str) -> str:
     return text.strip()
 
 
+_END_RE = re.compile(r"\s*(The end\.?|Fin\.?)\s*$", re.I)
+
+
+async def _top_up(sem, system: str, text: str, target: int, last: bool, spanish: bool) -> str:
+    """Ask for a continuation (up to TOPUP_ROUNDS) while the part is well under target."""
+    for _ in range(TOPUP_ROUNDS):
+        have = S.word_count(text)
+        if have >= 0.8 * target:
+            break
+        need = target - have + 100
+        if spanish:
+            ask = (f"Continúa esta misma parte desde donde quedó, sin repetir, unas {need} palabras más. "
+                   + ("Termina con 'Fin.'" if last else "No cierres el cuento ni digas 'Fin.'"))
+        else:
+            ask = (f"Continue this same part from where it stopped, without repeating, about {need} more words. "
+                   + ("End with 'The end.'" if last else "Do not end the story or write 'The end.'"))
+        body = _END_RE.sub("", text)
+        try:
+            extra = clean_part(await _llm_retry(sem, system, ask + "\n\nText so far:\n" + body[-2500:], 2000))
+        except Exception:  # noqa: BLE001
+            break
+        if not last:
+            extra = _END_RE.sub("", extra)
+        text = body.rstrip() + "\n\n" + extra
+    return text
+
+
 # ---------------------------------------------------------------- mock
 
 def _mock_outline(n: int, spanish: bool) -> dict:
@@ -265,24 +294,8 @@ async def produce(
             ask = int(words[i] * WORD_ASK_FACTOR)
             system, user = _part_prompt(outline, i, n, ask, idea, spanish)
             text = clean_part(await _llm_retry(llm_sem, system, user, int(ask * 2.2) + 400))
-            # later parts: top up once if far too short (part 1 stays fast)
-            if i > 0 and S.word_count(text) < 0.7 * words[i]:
-                more = (
-                    "Continúa esta misma parte desde donde quedó, sin repetir, unas "
-                    if spanish else
-                    "Continue this same part from where it stopped, without repeating, about "
-                ) + f"{words[i] - S.word_count(text) + 100} " + (
-                    "palabras más. No cierres el cuento." if spanish and i < n - 1 else
-                    "palabras más." if spanish else
-                    "more words. Do not end the story." if i < n - 1 else "more words."
-                ) + "\n\n" + text[-2500:]
-                try:
-                    extra = clean_part(await _llm_retry(llm_sem, system, more, 2000))
-                    if i < n - 1:
-                        extra = re.sub(r"\s*(The end\.?|Fin\.?)\s*$", "", extra, flags=re.I)
-                    text = text.rstrip() + "\n\n" + extra
-                except Exception:  # noqa: BLE001
-                    pass
+            if i > 0:  # later parts get topped up; part 1 stays fast
+                text = await _top_up(llm_sem, system, text, words[i], i == n - 1, spanish)
         if len(text) < 20:
             raise RuntimeError(f"Part {i + 1} came back empty.")
         texts[i] = text

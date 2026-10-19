@@ -120,6 +120,25 @@ def test_part1_recorded_first_even_if_written_last():
     print("part 1 priority OK", ready)
 
 
+def test_top_up_extends_short_parts():
+    import asyncio
+
+    calls = []
+
+    def fake_llm(system, user, max_tokens):
+        calls.append(user)
+        return ("soft word " * 60) + "The end."
+
+    with patch.object(pipeline, "_llm", side_effect=fake_llm):
+        sem = asyncio.Semaphore(2)
+        mid = asyncio.run(pipeline._top_up(sem, "sys", "short start.", 300, False, False))
+        last = asyncio.run(pipeline._top_up(sem, "sys", "short start. The end.", 300, True, False))
+    assert len(calls) == 4  # two rounds each
+    assert "The end" not in mid and story_mod.word_count(mid) > 200
+    assert last.rstrip().endswith("The end.") and last.count("The end") == 1
+    print("top-up OK")
+
+
 def test_profiles_tag_and_filter():
     import threading
 
@@ -154,5 +173,6 @@ if __name__ == "__main__":
     test_parse_outline_fallback()
     test_progressive_endpoints()
     test_part1_recorded_first_even_if_written_last()
+    test_top_up_extends_short_parts()
     test_profiles_tag_and_filter()
     print("== PIPELINE TESTS PASSED ==")
