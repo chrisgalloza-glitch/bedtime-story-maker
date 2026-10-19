@@ -45,6 +45,16 @@
         <button class="btn mic hidden" id="mic-btn" type="button" title="Speak">🎤 Speak</button>
         <button class="btn" id="make-btn" type="button" style="flex:1">✨ Make My Story</button>
       </div>
+      <div id="progress-wrap" class="progress-wrap hidden" aria-live="polite">
+        <div class="progress-pct-row">
+          <span id="progress-pct" class="progress-pct">0%</span>
+        </div>
+        <div class="progress-track" id="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+          <span class="progress-rider" id="progress-rider">🦆</span>
+        </div>
+        <div id="celebrate" class="celebrate hidden" aria-hidden="true"></div>
+      </div>
       <p class="status" id="status">Type your idea, then press Make My Story!</p>
     </div>
 

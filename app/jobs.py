@@ -21,6 +21,9 @@ class Job:
     voice_id: str = "ava"
     status: str = "queued"  # queued | writing | speaking | done | error
     progress: str = "Waiting to start…"
+    percent: int = 0
+    speak_part: int | None = None
+    speak_total: int | None = None
     error: str | None = None
     story_id: str | None = None
     title: str | None = None
@@ -39,6 +42,8 @@ def create_job(idea: str, language: str, voice_id: str = "ava") -> Job:
         idea=idea,
         language=language,
         voice_id=voice.id,
+        percent=1,
+        progress="Waiting to start…",
     )
     with _lock:
         _jobs[job.id] = job
@@ -59,7 +64,11 @@ def get_job(job_id: str) -> Job | None:
 def _set(job: Job, **kwargs: Any) -> None:
     with _lock:
         for k, v in kwargs.items():
-            setattr(job, k, v)
+            if k == "percent" and v is not None:
+                # Never go backwards
+                job.percent = max(int(job.percent), int(v))
+            else:
+                setattr(job, k, v)
 
 
 def run_job(job_id: str) -> None:
@@ -67,12 +76,32 @@ def run_job(job_id: str) -> None:
     if not job:
         return
 
-    def progress(msg: str) -> None:
-        _set(job, progress=msg)
+    def progress(
+        msg: str,
+        percent: int | None = None,
+        part: int | None = None,
+        total: int | None = None,
+        **_extra: Any,
+    ) -> None:
+        updates: dict[str, Any] = {"progress": msg}
+        if percent is not None:
+            updates["percent"] = percent
+        if part is not None:
+            updates["speak_part"] = part
+        if total is not None:
+            updates["speak_total"] = total
+        _set(job, **updates)
 
     try:
         voice = get_voice(job.voice_id)
-        _set(job, status="writing", progress="Writing your story…")
+        _set(
+            job,
+            status="writing",
+            progress="Writing your story…",
+            percent=3,
+            speak_part=None,
+            speak_total=None,
+        )
         text = story_mod.generate_story(job.idea, job.language, progress=progress)
         title = story_mod.extract_title(text, job.language)
         spoken = story_mod.spoken_text(text, title)
@@ -81,6 +110,7 @@ def run_job(job_id: str) -> None:
             job,
             status="speaking",
             progress=f"Recording {voice.name}'s voice…",
+            percent=40,
             title=title,
         )
         audio = asyncio.run(
@@ -94,10 +124,8 @@ def run_job(job_id: str) -> None:
 
         story_id = secrets.token_urlsafe(8)
         meta = story_mod.save_story_files(story_id, title, text, audio)
-        # stash voice on meta
         try:
             import json
-            from pathlib import Path
             from . import config
 
             meta_path = config.STORIES_DIR / story_id / "meta.json"
@@ -110,6 +138,7 @@ def run_job(job_id: str) -> None:
             job,
             status="done",
             progress="All done!",
+            percent=100,
             story_id=story_id,
             title=title,
         )

@@ -12,7 +12,7 @@ from typing import Callable
 
 from . import config
 
-ProgressCB = Callable[[str], None]
+ProgressCB = Callable[..., None]  # progress(msg, percent=..., part=..., total=...)
 
 SYSTEM_EN = """You are a warm, gentle bedtime storyteller for young children.
 Write a calm, soothing, kid-safe bedtime story.
@@ -186,7 +186,7 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
 
     if config.MOCK_LLM:
         if progress:
-            progress("Writing a short practice story (test mode)...")
+            progress("Writing a short practice story (test mode)...", percent=12)
         # Expand mock a bit so TTS has something to say
         story = MOCK_STORY
         if spanish:
@@ -197,7 +197,10 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
                 "y juntas miraron las estrellas hasta quedarse dormidas.\n\nFin.\n"
             )
         if progress:
-            progress(f"Story ready! About {word_count(story)} words (test mode).")
+            progress(
+                f"Story ready! About {word_count(story)} words (test mode).",
+                percent=40,
+            )
         return story
 
     if config.XAI_API_KEY:
@@ -212,7 +215,7 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
         )
 
     if progress:
-        progress(f"Writing your story with {label}...")
+        progress(f"Writing your story with {label}...", percent=5)
 
     if spanish:
         user = (
@@ -234,7 +237,11 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
         if words >= config.TARGET_MIN_WORDS:
             break
         if progress:
-            progress(f"Story so far: {words} words… writing more ({i + 1}/4)...")
+            write_pct = min(38, 5 + int((i + 1) / 4 * 33))
+            progress(
+                f"Story so far: {words} words… writing more ({i + 1}/4)...",
+                percent=write_pct,
+            )
         if spanish:
             cont = (
                 "Continúa el cuento desde donde quedó. No repitas lo ya escrito. "
@@ -261,7 +268,7 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
     if words < 50:
         raise RuntimeError(f"The story came back too short ({words} words). Try again.")
     if progress:
-        progress(f"Story ready! About {words} words.")
+        progress(f"Story ready! About {words} words.", percent=40)
     return story
 
 
@@ -347,13 +354,19 @@ async def synthesize_story(
     voice = get_voice(voice_id)
     display = voice.name
 
-    if voice.engine == "edge":
-        chunks = split_at_sentences(text, config.TTS_CHUNK_CHARS)
+    async def do_edge_parts(chunks: list[str], label: str) -> bytes:
         total = len(chunks)
         audio = bytearray()
         for i, chunk in enumerate(chunks, 1):
+            pct = 40 + int((i - 1) / max(total, 1) * 59)
+            pct_done = 40 + int(i / max(total, 1) * 59)
             if progress:
-                progress(f"Recording {display}'s voice… part {i} of {total}")
+                progress(
+                    f"Recording {label}'s voice… part {i} of {total}",
+                    percent=pct,
+                    part=i,
+                    total=total,
+                )
             try:
                 audio.extend(
                     await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
@@ -363,7 +376,18 @@ async def synthesize_story(
                 audio.extend(
                     await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
                 )
+            if progress:
+                progress(
+                    f"Recording {label}'s voice… part {i} of {total}",
+                    percent=min(99, pct_done),
+                    part=i,
+                    total=total,
+                )
         return bytes(audio)
+
+    if voice.engine == "edge":
+        chunks = split_at_sentences(text, config.TTS_CHUNK_CHARS)
+        return await do_edge_parts(chunks, display)
 
     # Grok / xAI TTS
     from .voices import tts_language_code
@@ -376,11 +400,16 @@ async def synthesize_story(
     xai_id = voice.xai_voice_id or voice.id
 
     for i, chunk in enumerate(chunks, 1):
+        pct = 40 + int((i - 1) / max(total, 1) * 59)
+        pct_done = 40 + int(i / max(total, 1) * 59)
         if fell_back:
             if progress:
                 progress(
                     f"Recording Ava's voice… part {i} of {total} "
-                    f"(switched after {display} had trouble)"
+                    f"(switched after {display} had trouble)",
+                    percent=pct,
+                    part=i,
+                    total=total,
                 )
             try:
                 audio.extend(
@@ -391,10 +420,22 @@ async def synthesize_story(
                 audio.extend(
                     await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
                 )
+            if progress:
+                progress(
+                    f"Recording Ava's voice… part {i} of {total}",
+                    percent=min(99, pct_done),
+                    part=i,
+                    total=total,
+                )
             continue
 
         if progress:
-            progress(f"Recording {display}'s voice… part {i} of {total}")
+            progress(
+                f"Recording {display}'s voice… part {i} of {total}",
+                percent=pct,
+                part=i,
+                total=total,
+            )
         try:
             part = await asyncio.to_thread(
                 _call_xai_tts, chunk, xai_id, lang_code, config.XAI_TTS_SPEED
@@ -402,13 +443,23 @@ async def synthesize_story(
             if not part or len(part) < 100:
                 raise RuntimeError("empty TTS response")
             audio.extend(part)
+            if progress:
+                progress(
+                    f"Recording {display}'s voice… part {i} of {total}",
+                    percent=min(99, pct_done),
+                    part=i,
+                    total=total,
+                )
         except Exception as e:
             fell_back = True
             err = str(e)[:80]
             if progress:
                 progress(
                     f"{display} had trouble ({err}) — "
-                    f"finishing with Ava… part {i} of {total}"
+                    f"finishing with Ava… part {i} of {total}",
+                    percent=pct,
+                    part=i,
+                    total=total,
                 )
             try:
                 audio.extend(
@@ -419,9 +470,16 @@ async def synthesize_story(
                 audio.extend(
                     await _synth_chunk_edge(chunk, config.VOICE, config.RATE)
                 )
+            if progress:
+                progress(
+                    f"Recording Ava's voice… part {i} of {total}",
+                    percent=min(99, pct_done),
+                    part=i,
+                    total=total,
+                )
 
     if fell_back and progress:
-        progress(f"Finished with Ava after {display} had trouble.")
+        progress(f"Finished with Ava after {display} had trouble.", percent=99)
     return bytes(audio)
 
 

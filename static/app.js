@@ -15,11 +15,25 @@
   const resultTitle = $("result-title");
   const storyList = $("story-list");
   const voiceGrid = $("voice-grid");
+  const progressWrap = $("progress-wrap");
+  const progressFill = $("progress-fill");
+  const progressPct = $("progress-pct");
+  const progressRider = $("progress-rider");
+  const progressTrack = $("progress-track");
+  const celebrate = $("celebrate");
   let language = "English";
   let selectedVoice = localStorage.getItem("storyVoice") || "ava";
   let voices = [];
   let pollTimer = null;
   let previewAudio = null;
+  let displayPercent = 0;
+  let targetPercent = 0;
+  let tweenTimer = null;
+  let lastSpeakPart = null;
+  let partStartedAt = 0;
+  let lastPartDurationMs = 45000;
+  let writingStartedAt = 0;
+  let serverWritingFloor = 0;
 
   const DB_NAME = "bedtime-stories";
   const STORE = "stories";
@@ -61,6 +75,113 @@
   function setStatus(msg, kind) {
     status.textContent = msg;
     status.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function voiceEmoji() {
+    const v = voices.find((x) => x.id === selectedVoice);
+    return (v && v.emoji) || "🦆";
+  }
+
+  function showProgressBar() {
+    progressWrap.classList.remove("hidden", "error", "done");
+    celebrate.classList.add("hidden");
+    celebrate.innerHTML = "";
+    progressRider.textContent = voiceEmoji();
+  }
+
+  function hideProgressBarSoon() {
+    setTimeout(() => {
+      if (!makeBtn.disabled) progressWrap.classList.add("hidden");
+    }, 4000);
+  }
+
+  function applyBarVisual(pct) {
+    const p = Math.max(0, Math.min(100, pct));
+    progressFill.style.width = p + "%";
+    progressRider.style.left = p + "%";
+    progressPct.textContent = Math.round(p) + "%";
+  }
+
+  function burstCelebrate() {
+    progressWrap.classList.add("done");
+    celebrate.classList.remove("hidden");
+    celebrate.innerHTML = "";
+    const stars = ["⭐", "✨", "🌟", "💫", "🎉", "⭐", "✨", "🌙"];
+    stars.forEach((s, i) => {
+      const el = document.createElement("span");
+      el.textContent = s;
+      const angle = (i / stars.length) * Math.PI * 2;
+      const dist = 48 + (i % 3) * 18;
+      el.style.setProperty("--dx", Math.cos(angle) * dist + "px");
+      el.style.setProperty("--dy", Math.sin(angle) * dist - 20 + "px");
+      el.style.animationDelay = i * 0.04 + "s";
+      celebrate.appendChild(el);
+    });
+  }
+
+  function startTween() {
+    if (tweenTimer) return;
+    tweenTimer = setInterval(() => {
+      // Client-side ease while writing toward 38%
+      if (writingStartedAt && targetPercent < 40 && targetPercent >= 3) {
+        const elapsed = Date.now() - writingStartedAt;
+        const eased = Math.min(38, serverWritingFloor + elapsed / 120000 * 28);
+        if (eased > targetPercent) targetPercent = eased;
+      }
+      // Within a speaking part, nudge forward using previous part duration
+      if (lastSpeakPart != null && targetPercent >= 40 && targetPercent < 99) {
+        const elapsed = Date.now() - partStartedAt;
+        const frac = Math.min(0.92, elapsed / Math.max(8000, lastPartDurationMs));
+        // soft cap: don't exceed next part boundary estimated from server target + small bump
+        const bump = frac * 2.5;
+        if (displayPercent < targetPercent + bump && displayPercent < 99) {
+          targetPercent = Math.max(targetPercent, Math.min(99, targetPercent + bump * 0.15));
+        }
+      }
+      if (displayPercent < targetPercent) {
+        const step = Math.max(0.4, (targetPercent - displayPercent) * 0.18);
+        displayPercent = Math.min(targetPercent, displayPercent + step);
+        applyBarVisual(displayPercent);
+      } else if (displayPercent > targetPercent) {
+        // never go backwards visually either
+        applyBarVisual(displayPercent);
+      }
+    }, 80);
+  }
+
+  function stopTween() {
+    if (tweenTimer) {
+      clearInterval(tweenTimer);
+      tweenTimer = null;
+    }
+  }
+
+  function setProgressFromJob(j) {
+    const pct = typeof j.percent === "number" ? j.percent : 0;
+    if (pct >= targetPercent) targetPercent = pct;
+    if (j.status === "writing") {
+      if (!writingStartedAt) writingStartedAt = Date.now();
+      serverWritingFloor = Math.max(serverWritingFloor, pct);
+    }
+    if (j.status === "speaking") {
+      writingStartedAt = 0;
+      if (j.speak_part != null && j.speak_part !== lastSpeakPart) {
+        if (lastSpeakPart != null && partStartedAt) {
+          lastPartDurationMs = Math.max(8000, Date.now() - partStartedAt);
+        }
+        lastSpeakPart = j.speak_part;
+        partStartedAt = Date.now();
+      }
+    }
+    if (j.status === "error") {
+      progressWrap.classList.add("error");
+      progressWrap.classList.remove("done");
+      targetPercent = Math.max(targetPercent, pct);
+      displayPercent = targetPercent;
+      applyBarVisual(displayPercent);
+      stopTween();
+    }
+    startTween();
   }
 
   async function api(path, opts = {}) {
@@ -346,9 +467,15 @@
     const tick = async () => {
       try {
         const j = await api("/api/jobs/" + jobId);
+        setProgressFromJob(j);
         setStatus(j.progress || j.status, j.status === "error" ? "err" : "busy");
         if (j.status === "done" && j.story_id) {
           clearInterval(pollTimer);
+          targetPercent = 100;
+          displayPercent = 100;
+          applyBarVisual(100);
+          burstCelebrate();
+          stopTween();
           makeBtn.disabled = false;
           const blob = await fetchAudioBlob(j.story_id);
           const meta = {
@@ -365,11 +492,14 @@
           downloadBtn.download = (meta.title.replace(/[^\w\- ]+/g, "").slice(0, 40) || "story") + ".mp3";
           setStatus("All done! Playing now…", "ok");
           player.play().catch(() => {});
+          hideProgressBarSoon();
           await refreshStories();
         } else if (j.status === "error") {
           clearInterval(pollTimer);
           makeBtn.disabled = false;
+          progressWrap.classList.add("error");
           setStatus(j.error || "Something went wrong", "err");
+          stopTween();
         }
       } catch (_) {
         setStatus("Still working… (waking up the story server)", "busy");
@@ -387,6 +517,14 @@
     }
     makeBtn.disabled = true;
     playerCard.classList.add("hidden");
+    displayPercent = 0;
+    targetPercent = 1;
+    writingStartedAt = Date.now();
+    serverWritingFloor = 1;
+    lastSpeakPart = null;
+    showProgressBar();
+    applyBarVisual(0);
+    startTween();
     setStatus("Starting… this can take a few minutes", "busy");
     try {
       const { job_id } = await api("/api/stories", {
@@ -400,6 +538,9 @@
       await pollJob(job_id);
     } catch (e) {
       makeBtn.disabled = false;
+      progressWrap.classList.add("error");
+      progressWrap.classList.remove("hidden");
+      stopTween();
       setStatus(e.message || "Could not start", "err");
     }
   });
