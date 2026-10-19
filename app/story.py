@@ -166,7 +166,14 @@ def _call_xai(api_key: str, system: str, user: str, max_tokens: int = 8192) -> s
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"xAI error {e.code}: {err_body[:500]}") from e
+        if e.code == 400 and "reasoning" in err_body.lower() and "reasoning_effort" in body:
+            body.pop("reasoning_effort")
+            req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        else:
+            raise RuntimeError(f"xAI error {e.code}: {err_body[:500]}") from e
     choices = payload.get("choices") or []
     if not choices:
         raise RuntimeError(f"xAI returned no choices: {str(payload)[:500]}")
@@ -193,12 +200,12 @@ def generate_story(idea: str, language: str, progress: ProgressCB | None = None)
             progress(f"Story ready! About {word_count(story)} words (test mode).")
         return story
 
-    if config.GEMINI_API_KEY:
-        call = lambda s, u: _call_gemini(config.GEMINI_API_KEY, s, u)
-        label = f"Gemini ({config.GEMINI_MODEL})"
-    elif config.XAI_API_KEY:
+    if config.XAI_API_KEY:
         call = lambda s, u: _call_xai(config.XAI_API_KEY, s, u)
-        label = f"xAI ({config.XAI_MODEL})"
+        label = "Grok"
+    elif config.GEMINI_API_KEY:
+        call = lambda s, u: _call_gemini(config.GEMINI_API_KEY, s, u)
+        label = "Gemini"
     else:
         raise RuntimeError(
             "No story key is set on the server. Ask a grown-up to add GEMINI_API_KEY."
