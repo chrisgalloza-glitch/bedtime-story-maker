@@ -26,11 +26,6 @@ TTS_CHUNK_CHARS = 4500
 XAI_TTS_CHUNK_CHARS = 14000
 XAI_TTS_SPEED = 0.9
 XAI_TTS_URL = "https://api.x.ai/v1/tts"
-# xAI list prices (docs.x.ai/docs/models, checked 2026-10-19), USD
-PRICE_IN_PER_M = float(os.environ.get("PRICE_IN_PER_M", "1.25"))  # grok-4.3 input
-PRICE_CACHED_IN_PER_M = float(os.environ.get("PRICE_CACHED_IN_PER_M", "0.20"))
-PRICE_OUT_PER_M = float(os.environ.get("PRICE_OUT_PER_M", "2.50"))  # grok-4.3 output
-PRICE_TTS_PER_M_CHARS = float(os.environ.get("PRICE_TTS_PER_M_CHARS", "15.00"))
 
 _ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(_ROOT / "data")))

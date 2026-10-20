@@ -1,7 +1,6 @@
 """Pipeline + progressive endpoint tests (MOCK_LLM, fake TTS)."""
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -279,28 +278,6 @@ def test_timings_endpoints_and_old_story_fallback():
     print("timings endpoints OK")
 
 
-def test_usage_recorded():
-    import asyncio
-    import tempfile as tf
-
-    u = {}
-    tok = story_mod.USAGE.set(u)
-    story_mod.record_llm_usage({"usage": {"prompt_tokens": 1000, "completion_tokens": 2000,
-                                          "prompt_tokens_details": {"cached_tokens": 200}}})
-    story_mod.USAGE.reset(tok)
-    c = story_mod.usage_cost(u)
-    assert u["llm_calls"] == 1 and abs(c["writing_usd"] - (800 * 1.25 + 200 * 0.2 + 2000 * 2.5) / 1e6) < 1e-4
-    # Grok voice: TTS chars counted (mocked xAI TTS), Ava chars separate
-    with patch.object(story_mod, "_call_xai_tts", side_effect=lambda *a, **k: TINY):
-        out = asyncio.run(pipeline.produce("duck", "English", "luna", "short", Path(tf.mkdtemp()), lambda **kw: None))
-    us = out["usage"]
-    expected = sum(len(story_mod.spoken_text_part(pipeline._mock_part(0, 4, False), out["title"])) if i == 0
-                   else len(pipeline._mock_part(i, 4, False)) for i in range(4))
-    assert us["voice"] == "luna" and us["xai_tts_chars"] == expected, (us, expected)
-    assert abs(us["voice_usd"] - expected * 15 / 1e6) < 1e-4 and "ava_tts_chars" not in us
-    print("usage OK", us)
-
-
 async def _async(v):
     return v
 
@@ -316,5 +293,4 @@ if __name__ == "__main__":
     test_align_handles_punctuation_and_dashes()
     test_timings_endpoints_and_old_story_fallback()
     test_edge_chunks_parallel_and_marks_shifted()
-    test_usage_recorded()
     print("== PIPELINE TESTS PASSED ==")

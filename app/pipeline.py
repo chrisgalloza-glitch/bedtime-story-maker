@@ -221,7 +221,6 @@ async def _edge_text(text: str, sem: asyncio.Semaphore | None = None) -> tuple[b
     sem = sem or asyncio.Semaphore(EDGE_PARALLEL)
 
     async def one(chunk: str) -> tuple[bytes, list]:
-        S.record_tts_chars("ava", len(chunk))
         async with sem:
             try:
                 return await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
@@ -255,7 +254,6 @@ async def synth_part(text: str, voice_id: str, language: str, state: dict) -> tu
             )
             if not part or len(part) < 100:
                 raise RuntimeError("empty TTS response")
-            S.record_tts_chars("xai", len(chunk))  # billed per input character
             out.extend(part)
         return bytes(out), None
     except Exception as e:  # noqa: BLE001
@@ -285,8 +283,6 @@ async def produce(
     parts_total, part_ready (int), status. Returns {title, text, audio_path}."""
     spanish = language.lower().startswith("es")
     voice = get_voice(voice_id)
-    usage: dict = {"voice": voice.id}
-    S.USAGE.set(usage)
     words = plan_words(length)
     n = len(words)
     folder.mkdir(parents=True, exist_ok=True)
@@ -370,6 +366,4 @@ async def produce(
         full.extend((folder / f"part-{i + 1}.mp3").read_bytes())
     RA.write(folder / "timings.json", RA.combine(timings))
     text_all = f"Title: {title}\n\n" + "\n\n".join(t or "" for t in texts)
-    usage.update(S.usage_cost(usage))
-    return {"title": title, "text": text_all, "audio": bytes(full),
-            "fell_back": bool(tts_state.get("fell_back")), "usage": usage}
+    return {"title": title, "text": text_all, "audio": bytes(full), "fell_back": bool(tts_state.get("fell_back"))}

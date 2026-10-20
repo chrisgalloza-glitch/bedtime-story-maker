@@ -111,9 +111,6 @@ def run_job(job_id: str) -> None:
             meta["voice_id"] = job.voice_id
             meta["length"] = job.length
             meta["profile"] = job.profile
-            if result.get("usage"):
-                meta["usage"] = result["usage"]
-                print(f"[usage] story={job.story_id} length={job.length} " + json.dumps(result["usage"]), flush=True)
             (folder / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             pass
