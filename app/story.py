@@ -8,9 +8,44 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from contextvars import ContextVar
 from typing import Callable
 
 from . import config
+
+# Per-job usage accumulator (set by the pipeline; copied into to_thread workers).
+USAGE: ContextVar[dict | None] = ContextVar("story_usage", default=None)
+
+
+def record_llm_usage(payload: dict) -> None:
+    u = USAGE.get()
+    if u is None:
+        return
+    usage = payload.get("usage") or {}
+    details = usage.get("prompt_tokens_details") or {}
+    u["llm_calls"] = u.get("llm_calls", 0) + 1
+    u["prompt_tokens"] = u.get("prompt_tokens", 0) + int(usage.get("prompt_tokens") or 0)
+    u["cached_prompt_tokens"] = u.get("cached_prompt_tokens", 0) + int(details.get("cached_tokens") or 0)
+    # completion_tokens on xAI already include reasoning tokens when present
+    u["completion_tokens"] = u.get("completion_tokens", 0) + int(usage.get("completion_tokens") or 0)
+
+
+def record_tts_chars(engine: str, n: int) -> None:
+    u = USAGE.get()
+    if u is None:
+        return
+    key = "xai_tts_chars" if engine == "xai" else "ava_tts_chars"
+    u[key] = u.get(key, 0) + int(n)
+
+
+def usage_cost(u: dict) -> dict:
+    cached = u.get("cached_prompt_tokens", 0)
+    fresh = max(0, u.get("prompt_tokens", 0) - cached)
+    writing = (fresh * config.PRICE_IN_PER_M + cached * config.PRICE_CACHED_IN_PER_M
+               + u.get("completion_tokens", 0) * config.PRICE_OUT_PER_M) / 1e6
+    voice = u.get("xai_tts_chars", 0) * config.PRICE_TTS_PER_M_CHARS / 1e6
+    return {"writing_usd": round(writing, 4), "voice_usd": round(voice, 4), "total_usd": round(writing + voice, 4)}
+
 
 ProgressCB = Callable[..., None]  # progress(msg, percent=..., part=..., total=...)
 
@@ -174,6 +209,7 @@ def _call_xai(api_key: str, system: str, user: str, max_tokens: int = 8192) -> s
                 payload = json.loads(resp.read().decode("utf-8"))
         else:
             raise RuntimeError(f"xAI error {e.code}: {err_body[:500]}") from e
+    record_llm_usage(payload)
     choices = payload.get("choices") or []
     if not choices:
         raise RuntimeError(f"xAI returned no choices: {str(payload)[:500]}")
