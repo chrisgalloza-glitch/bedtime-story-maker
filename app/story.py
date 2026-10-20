@@ -283,6 +283,21 @@ async def _synth_chunk_edge(text: str, voice: str, rate: str) -> bytes:
     return bytes(buf)
 
 
+async def _synth_chunk_edge_timed(text: str, voice: str, rate: str) -> tuple[bytes, list]:
+    """Like _synth_chunk_edge but also returns word boundaries [(start_s, dur_s, word)]."""
+    import edge_tts
+
+    communicate = edge_tts.Communicate(text, voice=voice, rate=rate, boundary="WordBoundary")
+    buf = bytearray()
+    marks: list = []
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buf.extend(chunk["data"])
+        elif chunk["type"] == "WordBoundary":
+            marks.append((chunk["offset"] / 1e7, chunk["duration"] / 1e7, chunk.get("text", "")))
+    return bytes(buf), marks
+
+
 def _call_xai_tts(text: str, voice_id: str, language: str, speed: float | None = None) -> bytes:
     """POST https://api.x.ai/v1/tts — returns raw MP3 bytes."""
     if not config.XAI_API_KEY:

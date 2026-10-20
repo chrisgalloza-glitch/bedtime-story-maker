@@ -22,6 +22,19 @@ from app.main import app  # noqa: E402
 
 TINY = (ROOT / "static/previews/ava-en.mp3").read_bytes()[:6000]
 
+from app import readalong as RA  # noqa: E402
+
+TINY_DUR = RA.mp3_duration(TINY)
+
+
+def _timed(text):
+    """Mock Ava: plausible WordBoundary marks spread over the clip, punctuation stripped."""
+    import re
+
+    words = re.findall(r"[\w']+", text)
+    step = (TINY_DUR - 0.2) / max(1, len(words))
+    return TINY, [(0.1 + i * step, step * 0.8, w) for i, w in enumerate(words)]
+
 
 def test_plan_words():
     for k, (total, n) in pipeline.LENGTHS.items():
@@ -48,7 +61,7 @@ def test_progressive_endpoints():
         active["max"] = max(active["max"], active["n"])
         await asyncio.sleep(0.3)
         active["n"] -= 1
-        return TINY
+        return _timed(text)
 
     import threading
 
@@ -59,7 +72,7 @@ def test_progressive_endpoints():
     def threaded(job_id):  # TestClient runs background tasks inline; real server doesn't
         threading.Thread(target=orig, args=(job_id,), daemon=True).start()
 
-    with patch.object(story_mod, "_synth_chunk_edge", side_effect=fake_edge), patch.object(
+    with patch.object(story_mod, "_synth_chunk_edge_timed", side_effect=fake_edge), patch.object(
         jobs_mod, "run_job", side_effect=threaded
     ):
         c = TestClient(app)
@@ -103,10 +116,10 @@ def test_part1_recorded_first_even_if_written_last():
     async def fake_edge(text, voice, rate):
         order.append("title" if "Little Duck" in text else "other")
         await asyncio.sleep(0.2)
-        return TINY
+        return _timed(text)
 
     ready = []
-    with patch.object(story_mod, "_synth_chunk_edge", side_effect=fake_edge), patch.object(
+    with patch.object(story_mod, "_synth_chunk_edge_timed", side_effect=fake_edge), patch.object(
         pipeline, "MOCK_DELAYS", [0.8, 0.05, 0.05, 0.05, 0.05]
     ):
         asyncio.run(
@@ -145,9 +158,9 @@ def test_profiles_tag_and_filter():
     from app import jobs as jobs_mod
 
     async def fake_edge(text, voice, rate):
-        return TINY
+        return _timed(text)
 
-    with patch.object(story_mod, "_synth_chunk_edge", side_effect=fake_edge):
+    with patch.object(story_mod, "_synth_chunk_edge_timed", side_effect=fake_edge):
         c = TestClient(app)
         c.post("/api/login", json={"pin": "4821"})
         ids = {}
@@ -168,6 +181,82 @@ def test_profiles_tag_and_filter():
     print("profiles OK")
 
 
+def test_mp3_duration_and_estimate():
+    assert 0.3 < TINY_DUR < 2.0, TINY_DUR
+    assert abs(RA.mp3_duration(TINY * 3) - 3 * TINY_DUR) < 0.15  # concatenation-safe (TINY is cut mid-frame)
+    text = "Title.\n\nOnce upon a time, a duck swam. The end."
+    est = RA.estimate(text, 10.0)
+    starts = [w[0] for w in est["words"]]
+    assert est["estimated"] and starts == sorted(starts)
+    assert est["words"][-1][1] <= 10.0 and est["words"][0][0] >= 0
+    assert est["words"][1][3] == 1  # paragraph start flag on "Once"
+    # pause after "time," makes the gap bigger than between "upon" and "a"
+    ws = est["words"]
+    gap = lambda tok: next(ws[i + 1][0] - ws[i][1] for i in range(len(ws) - 1) if ws[i][2] == tok)
+    assert gap("time,") > gap("upon") + 0.05
+
+
+def test_align_handles_punctuation_and_dashes():
+    text = 'Title Here.\n\nOnce upon a time, a duck\u2014named Pip\u2014swam. "Hello!" she said.'
+    marks = [(0.1, .4, "Title"), (.5, .5, "Here"), (1.4, .3, "Once"), (1.7, .3, "upon"),
+             (2.0, .1, "a"), (2.1, .4, "time"), (3.0, .1, "a"), (3.1, .4, "duck"),
+             (3.8, .4, "named"), (4.4, .4, "Pip"), (5.0, .6, "swam"), (6.3, .3, "Hello"),
+             (6.7, .2, "she"), (6.9, .4, "said")]
+    t = RA.align(text, marks, 7.7)
+    assert not t["estimated"]
+    toks = [w[2] for w in t["words"]]
+    assert toks[0] == "Title" and '"Hello!"' in toks
+    by = {w[2]: w for w in t["words"]}
+    assert by['"Hello!"'][0] == 6.3 and by["said."][0] == 6.9
+    assert by["duck\u2014named"][0] == 3.1 and by["duck\u2014named"][1] >= 4.1
+
+
+def test_timings_endpoints_and_old_story_fallback():
+    import threading
+
+    from app import config, jobs as jobs_mod
+
+    orig = jobs_mod.run_job
+
+    def threaded(job_id):
+        threading.Thread(target=orig, args=(job_id,), daemon=True).start()
+
+    with patch.object(story_mod, "_synth_chunk_edge_timed", side_effect=lambda t, v, r: _timed(t)), patch.object(
+        jobs_mod, "run_job", side_effect=threaded
+    ):
+        c = TestClient(app)
+        c.post("/api/login", json={"pin": "4821"})
+        jid = c.post("/api/stories", json={"idea": "a duck", "length": "short"}).json()["job_id"]
+        for _ in range(100):
+            j = c.get(f"/api/jobs/{jid}").json()
+            if j["status"] in ("done", "error"):
+                break
+            time.sleep(0.1)
+        assert j["status"] == "done", j
+        sid = j["story_id"]
+        p1 = c.get(f"/api/stories/{sid}/parts/1/timings").json()
+        assert not p1["estimated"] and p1["words"] and abs(p1["duration"] - TINY_DUR) < 0.01
+        assert p1["words"][0][2].startswith("The")  # title comes first in part 1
+        assert all(0 <= w[0] <= w[1] <= p1["duration"] + 0.01 for w in p1["words"])
+        full = c.get(f"/api/stories/{sid}/timings").json()
+        assert abs(full["duration"] - 4 * TINY_DUR) < 0.02
+        st = [w[0] for w in full["words"]]
+        assert st == sorted(st) and st[-1] > 3 * TINY_DUR  # last part shifted
+        assert c.get(f"/api/stories/{sid}/parts/9/timings").status_code == 404
+    # an "old" story without timings gets estimated ones from text + audio length
+    old = config.STORIES_DIR / "OldStory1"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "audio.mp3").write_bytes(TINY * 2)
+    (old / "story.txt").write_text("Title: Old One\n\nA calm night. The end.", encoding="utf-8")
+    t = c.get("/api/stories/OldStory1/timings").json()
+    assert t["estimated"] and t["words"][0][2] == "Old" and abs(t["duration"] - 2 * TINY_DUR) < 0.15
+    print("timings endpoints OK")
+
+
+async def _async(v):
+    return v
+
+
 if __name__ == "__main__":
     test_plan_words()
     test_parse_outline_fallback()
@@ -175,4 +264,7 @@ if __name__ == "__main__":
     test_part1_recorded_first_even_if_written_last()
     test_top_up_extends_short_parts()
     test_profiles_tag_and_filter()
+    test_mp3_duration_and_estimate()
+    test_align_handles_punctuation_and_dashes()
+    test_timings_endpoints_and_old_story_fallback()
     print("== PIPELINE TESTS PASSED ==")

@@ -298,3 +298,25 @@ audio {
   border-radius: 12px; padding: 4px 8px; cursor: pointer;
 }
 .emoji-grid button.active { border-color: var(--warn); }
+
+/* ---- read-along ---- */
+.readalong-btn { background: linear-gradient(90deg, #7b5cff, #4fc3f7); }
+.readalong-btn[aria-pressed="true"] { background: linear-gradient(90deg, #ff6b81, #f0c674); color: #1a1a2e; }
+.readalong {
+  position: relative; margin-top: 12px; max-height: 46vh; overflow-y: auto;
+  background: #0f1630; border-radius: var(--radius); padding: 18px 18px 40vh;
+  font-family: "Baloo 2", "Comic Neue", "Comic Sans MS", "Chalkboard SE", "Nunito", system-ui, sans-serif;
+  font-size: 1.65rem; line-height: 1.75; font-weight: 600; color: #e8e4ff;
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+}
+@media (orientation: landscape) { .readalong { max-height: 58vh; font-size: 1.5rem; } }
+@media (max-width: 480px) { .readalong { font-size: 1.35rem; } }
+.readalong p { margin: 0 0 0.9em; }
+.readalong .w { border-radius: 10px; padding: 0 3px; transition: background .15s, color .15s, box-shadow .15s; cursor: pointer; }
+.readalong .w.on {
+  background: linear-gradient(90deg, #ff6b81, #f0c674, #2ecc71, #4fc3f7, #b388ff);
+  color: #1a1a2e; box-shadow: 0 0 16px rgba(255, 214, 102, .75);
+}
+.readalong .ra-msg { color: var(--muted); font-size: 1.1rem; }
+.readalong .ra-part { border-top: 2px dashed rgba(255,255,255,.12); padding-top: .6em; }
+.readalong .ra-part:first-child { border-top: 0; padding-top: 0; }

@@ -1,5 +1,5 @@
 /* Minimal service worker — cache shell for offline open; API always network. */
-const CACHE = "story-maker-v5-profiles";
+const CACHE = "story-maker-v6-readalong";
 const SHELL = [
   "/",
   "/index.html",

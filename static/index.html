@@ -85,6 +85,10 @@
         <button class="btn secondary" id="restart-btn" type="button" style="flex:1">⏮️ Start over</button>
         <button class="btn" id="live-toggle" type="button" style="flex:1">⏸ Pause</button>
       </div>
+      <div class="row">
+        <button class="btn readalong-btn" id="readalong-btn" type="button" style="flex:1" aria-pressed="false">📖 Read along</button>
+      </div>
+      <div id="readalong" class="readalong hidden" aria-live="off"></div>
       <audio id="player" controls playsinline class="hidden"></audio>
       <div class="row">
         <a class="btn secondary" id="download-btn" href="#" download>⬇ Download MP3</a>

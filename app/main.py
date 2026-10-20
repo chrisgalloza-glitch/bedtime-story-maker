@@ -15,6 +15,7 @@ from . import config
 from . import jobs as jobs_mod
 from . import pipeline as pipeline_mod
 from . import previews as previews_mod
+from . import readalong as readalong_mod
 from . import story as story_mod
 from .voices import get_voice, list_voices_public
 
@@ -226,6 +227,41 @@ def get_part_audio(story_id: str, n: int, request: Request):
     if not path.is_file() or (job is not None and n not in job.parts_ready):
         raise HTTPException(404, "Part not ready yet.")
     return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+def _safe_id(story_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,40}", story_id):
+        raise HTTPException(404, "Not found.")
+
+
+@app.get("/api/stories/{story_id}/parts/{n}/timings")
+def get_part_timings(story_id: str, n: int, request: Request):
+    require_auth(request)
+    _safe_id(story_id)
+    job = next((j for j in jobs_mod._jobs.values() if j.story_id == story_id), None)
+    path = config.STORIES_DIR / story_id / f"part-{n}.json"
+    if not path.is_file() or (job is not None and n not in job.parts_ready):
+        raise HTTPException(404, "Timings not ready yet.")
+    return Response(path.read_text(encoding="utf-8"), media_type="application/json")
+
+
+@app.get("/api/stories/{story_id}/timings")
+def get_story_timings(story_id: str, request: Request):
+    """Whole-story timings; older stories get estimated timings from text + audio length."""
+    require_auth(request)
+    _safe_id(story_id)
+    folder = config.STORIES_DIR / story_id
+    path = folder / "timings.json"
+    if not path.is_file():
+        paths = story_mod.story_paths(story_id)
+        if not paths:
+            raise HTTPException(404, "Story not found.")
+        mp3, txt = paths
+        text = txt.read_text(encoding="utf-8")
+        title = story_mod.extract_title(text)
+        spoken = story_mod.spoken_text(text, title)
+        readalong_mod.write(path, readalong_mod.estimate(spoken, readalong_mod.mp3_duration(mp3.read_bytes())))
+    return Response(path.read_text(encoding="utf-8"), media_type="application/json")
 
 
 @app.get("/api/stories/{story_id}/text")

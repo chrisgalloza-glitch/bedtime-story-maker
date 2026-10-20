@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import config
+from . import readalong as RA
 from . import story as S
 from .voices import get_voice, tts_language_code
 
@@ -207,19 +208,25 @@ def _mock_part(idx: int, n: int, spanish: bool) -> str:
 
 # ---------------------------------------------------------------- TTS
 
-async def _edge_text(text: str) -> bytes:
+async def _edge_text(text: str) -> tuple[bytes, list]:
+    """Ava audio + word boundaries (offsets relative to the start of this text's audio)."""
     out = bytearray()
+    marks: list = []
     for chunk in S.split_at_sentences(text, config.TTS_CHUNK_CHARS):
         try:
-            out.extend(await S._synth_chunk_edge(chunk, config.VOICE, config.RATE))
+            audio, m = await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
         except Exception:  # noqa: BLE001
             await asyncio.sleep(1.5)
-            out.extend(await S._synth_chunk_edge(chunk, config.VOICE, config.RATE))
-    return bytes(out)
+            audio, m = await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
+        shift = RA.mp3_duration(bytes(out)) if out else 0.0
+        marks.extend((st + shift, du, w) for st, du, w in m)
+        out.extend(audio)
+    return bytes(out), marks
 
 
-async def synth_part(text: str, voice_id: str, language: str, state: dict) -> bytes:
-    """Voice one part. xAI voices fall back to Ava (and stay on Ava) on failure."""
+async def synth_part(text: str, voice_id: str, language: str, state: dict) -> tuple[bytes, list | None]:
+    """Voice one part -> (mp3, word boundaries or None when the engine gives none).
+    xAI voices fall back to Ava (and stay on Ava) on failure."""
     voice = get_voice(voice_id)
     if voice.engine == "edge" or state.get("fell_back"):
         return await _edge_text(text)
@@ -233,11 +240,18 @@ async def synth_part(text: str, voice_id: str, language: str, state: dict) -> by
             if not part or len(part) < 100:
                 raise RuntimeError("empty TTS response")
             out.extend(part)
-        return bytes(out)
+        return bytes(out), None
     except Exception as e:  # noqa: BLE001
         state["fell_back"] = True
         state["fallback_reason"] = str(e)[:80]
         return await _edge_text(text)
+
+
+def part_timings(spoken: str, audio: bytes, marks: list | None) -> dict:
+    duration = RA.mp3_duration(audio)
+    if marks:
+        return RA.align(spoken, marks, duration)
+    return RA.estimate(spoken, duration)
 
 
 # ---------------------------------------------------------------- orchestration
@@ -285,6 +299,7 @@ async def produce(
     on_update(title=title, progress="Writing the first part…", percent=8)
 
     texts: list[str | None] = [None] * n
+    timings: list[dict] = [{} for _ in range(n)]
 
     async def write_and_record(i: int) -> None:
         if config.MOCK_LLM:
@@ -307,7 +322,9 @@ async def produce(
         async with tts_sem:
             if i == 0:
                 first_tts_started.set()
-            audio = await synth_part(spoken, voice.id, language, tts_state)
+            audio, marks = await synth_part(spoken, voice.id, language, tts_state)
+        timings[i] = part_timings(spoken, audio, marks)
+        RA.write(folder / f"part-{i + 1}.json", timings[i])
         (folder / f"part-{i + 1}.mp3").write_bytes(audio)
         done_frac[i] = 1.0
         on_update(
@@ -332,5 +349,6 @@ async def produce(
     full = bytearray()
     for i in range(n):
         full.extend((folder / f"part-{i + 1}.mp3").read_bytes())
+    RA.write(folder / "timings.json", RA.combine(timings))
     text_all = f"Title: {title}\n\n" + "\n\n".join(t or "" for t in texts)
     return {"title": title, "text": text_all, "audio": bytes(full), "fell_back": bool(tts_state.get("fell_back"))}

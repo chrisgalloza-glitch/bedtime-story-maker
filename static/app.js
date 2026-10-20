@@ -452,6 +452,7 @@
       downloadBtn.classList.remove("hidden");
       resultTitle.textContent = s.title || "Your story";
       player.src = url;
+      raLoadFull(s.id);
       downloadBtn.href = url;
       downloadBtn.download = ((s.title || "story").replace(/[^\w\- ]+/g, "").slice(0, 40) || "story") + ".mp3";
       player.play().catch(() => {});
@@ -477,6 +478,7 @@
     Object.values(live.urls).forEach((u) => URL.revokeObjectURL(u));
     live.el.forEach((e) => { if (e) { e.pause(); e.removeAttribute("src"); } });
     Object.assign(live, { active: false, jobId: null, storyId: null, total: 0, urls: {}, fetching: {}, cur: 0, waiting: false, started: false, slot: 0, finished: false });
+    if (typeof raReset === "function") raReset();
   }
 
   function livePrime() {
@@ -576,6 +578,7 @@
       if (!res.ok) throw new Error("part " + n);
       const blob = await res.blob();
       live.urls[n] = URL.createObjectURL(blob);
+      raLoadPart(live.storyId, n);
       if (n === 1) {
         playerCard.classList.remove("hidden");
         showLivePlayer();
@@ -593,6 +596,183 @@
       live.fetching[n] = false;
     }
   }
+
+  // ---------- read-along (hidden until the 📖 button is pressed) ----------
+  const raPanel = $("readalong");
+  const raBtn = $("readalong-btn");
+  const ra = { parts: {}, partEls: {}, full: null, fullEls: null, fullId: null, onEl: null, lastTop: -1, raf: 0 };
+
+  function raReset() {
+    Object.assign(ra, { parts: {}, partEls: {}, full: null, fullEls: null, fullId: null, onEl: null, lastTop: -1 });
+    raPanel.innerHTML = "";
+  }
+
+  function raBuild(words, partN) {
+    // words: [[start, end, text, newParagraph], ...] -> container + span list
+    const wrap = document.createElement("div");
+    wrap.className = "ra-part";
+    if (partN) wrap.dataset.part = partN;
+    let p = document.createElement("p");
+    wrap.appendChild(p);
+    const els = [];
+    words.forEach((w, i) => {
+      if (w[3] && p.childNodes.length) { p = document.createElement("p"); wrap.appendChild(p); }
+      const sp = document.createElement("span");
+      sp.className = "w";
+      sp.textContent = w[2];
+      sp.dataset.i = i;
+      if (partN) sp.dataset.part = partN;
+      p.appendChild(sp);
+      p.appendChild(document.createTextNode(" "));
+      els.push(sp);
+    });
+    return { wrap, els };
+  }
+
+  function raMsg(text) {
+    raPanel.innerHTML = "";
+    const m = document.createElement("p"); m.className = "ra-msg"; m.textContent = text;
+    raPanel.appendChild(m);
+  }
+
+  function raFullMode() { return !player.classList.contains("hidden"); }
+
+  function raRenderLive() {
+    // show every part that has words, in order; keep built nodes
+    if (raFullMode()) return;
+    raPanel.querySelectorAll(".ra-msg").forEach((m) => m.remove());
+    Object.keys(ra.parts).map(Number).sort((a, b) => a - b).forEach((n) => {
+      if (!ra.partEls[n]) {
+        const { wrap, els } = raBuild(ra.parts[n].words || [], n);
+        ra.partEls[n] = { wrap, els };
+        const after = Array.from(raPanel.querySelectorAll(".ra-part")).find((x) => Number(x.dataset.part) > n);
+        raPanel.insertBefore(wrap, after || null);
+      }
+    });
+    if (!raPanel.children.length) raMsg("The words are on their way… ✨");
+  }
+
+  function raRenderFull() {
+    raPanel.innerHTML = "";
+    ra.partEls = {};
+    ra.onEl = null; ra.lastTop = -1;
+    if (!ra.full) { raMsg("The words are on their way… ✨"); return; }
+    if (!(ra.full.words || []).length) { raMsg("No words saved for this story."); return; }
+    const { wrap, els } = raBuild(ra.full.words, 0);
+    ra.fullEls = els;
+    raPanel.appendChild(wrap);
+  }
+
+  async function raFetch(url) {
+    for (let k = 0; k < 3; k++) {
+      try {
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (res.ok) return await res.json();
+        if (res.status === 404 && k === 2) return null;
+      } catch (_) {}
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+    return null;
+  }
+
+  async function raLoadPart(storyId, n) {
+    if (!storyId || ra.parts[n]) return;
+    const t = await raFetch("/api/stories/" + storyId + "/parts/" + n + "/timings");
+    if (t && live.storyId === storyId) { ra.parts[n] = t; raRenderLive(); }
+  }
+
+  async function raLoadFull(storyId) {
+    ra.fullId = storyId; ra.full = null; ra.fullEls = null;
+    raRenderFull();
+    const t = await raFetch("/api/stories/" + storyId + "/timings");
+    if (ra.fullId !== storyId) return;
+    ra.full = t || { words: [] };
+    if (raFullMode()) raRenderFull();
+  }
+
+  function raCurrent() {
+    // -> {el: audio element, words, spans}
+    if (raFullMode()) {
+      return { el: player, words: ra.full && ra.full.words, spans: ra.fullEls };
+    }
+    const n = live.cur;
+    const pe = ra.partEls[n];
+    return { el: live.el[1 - live.slot], words: ra.parts[n] && ra.parts[n].words, spans: pe && pe.els };
+  }
+
+  function raIndexAt(words, t) {
+    let lo = 0, hi = words.length - 1, ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (words[mid][0] <= t + 0.05) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  function raTick() {
+    ra.raf = 0;
+    if (raPanel.classList.contains("hidden")) return;
+    if (raFullMode() && !ra.fullEls && ra.full) raRenderFull();
+    if (!raFullMode() && ra.fullEls) { ra.fullEls = null; raPanel.innerHTML = ""; ra.partEls = {}; raRenderLive(); }
+    const c = raCurrent();
+    if (c.el && c.words && c.spans && c.spans.length) {
+      const i = raIndexAt(c.words, c.el.currentTime || 0);
+      const sp = i >= 0 ? c.spans[i] : null;
+      if (sp !== ra.onEl) {
+        if (ra.onEl) ra.onEl.classList.remove("on");
+        if (sp) sp.classList.add("on");
+        ra.onEl = sp;
+        if (sp && sp.offsetTop !== ra.lastTop) {
+          ra.lastTop = sp.offsetTop;
+          raPanel.scrollTo({ top: Math.max(0, sp.offsetTop - raPanel.clientHeight / 2 + sp.offsetHeight / 2), behavior: "smooth" });
+        }
+      }
+    }
+    ra.raf = requestAnimationFrame(raTick);
+  }
+
+  function raApply(show) {
+    raPanel.classList.toggle("hidden", !show);
+    raBtn.setAttribute("aria-pressed", show ? "true" : "false");
+    raBtn.textContent = show ? "📖 Hide words" : "📖 Read along";
+    if (show) {
+      ra.lastTop = -1;
+      if (raFullMode()) { if (!ra.fullEls) raRenderFull(); } else raRenderLive();
+      if (!ra.raf) ra.raf = requestAnimationFrame(raTick);
+    } else if (ra.raf) { cancelAnimationFrame(ra.raf); ra.raf = 0; }
+  }
+
+  raBtn.addEventListener("click", () => {
+    const show = raPanel.classList.contains("hidden");
+    localStorage.setItem(pKey("readAlong"), show ? "1" : "0");
+    raApply(show);
+    if (show) playerCard.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  // tap a word to jump there
+  raPanel.addEventListener("click", (e) => {
+    const sp = e.target.closest(".w");
+    if (!sp) return;
+    const i = Number(sp.dataset.i);
+    if (raFullMode()) {
+      if (!ra.full) return;
+      try { player.currentTime = ra.full.words[i][0]; } catch (_) {}
+      player.play().catch(() => {});
+      return;
+    }
+    const n = Number(sp.dataset.part);
+    const t = ra.parts[n] && ra.parts[n].words[i] ? ra.parts[n].words[i][0] : 0;
+    if (!live.urls[n]) return;
+    if (n !== live.cur || live.ended) {
+      live.el.forEach((x) => { if (x) { x.onended = null; x.pause(); } });
+      live.ended = false;
+      livePlay(n);
+    }
+    const el = live.el[1 - live.slot];
+    const go = () => { try { el.currentTime = t; } catch (_) {} };
+    if (el.readyState >= 1) go(); else el.addEventListener("loadedmetadata", go, { once: true });
+    if (el.paused) { el.play().catch(() => {}); liveToggle.textContent = "⏸ Pause"; }
+  });
 
   async function pollJob(jobId) {
     clearInterval(pollTimer);
@@ -638,6 +818,7 @@
           } else {
             showFullPlayer();
             player.src = url;
+            raLoadFull(j.story_id);
             setStatus("All done! Press play 🎶", "ok");
           }
           hideProgressBarSoon();
@@ -785,11 +966,13 @@
     renderProfiles();
     renderVoices();
     syncLengthButtons();
+    raApply(localStorage.getItem(pKey("readAlong")) === "1");
     const p = profiles.find((x) => x.id === id);
     setStatus("Hi " + p.name + " " + p.emoji + "! Type your idea, then press Make My Story!");
     await refreshStories();
   }
   renderProfiles();
+  raApply(localStorage.getItem(pKey("readAlong")) === "1");
 
   checkSession();
 })();
