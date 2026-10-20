@@ -31,6 +31,12 @@ TTS_CONCURRENCY = 3
 # and top later parts up (twice at most) when still short.
 WORD_ASK_FACTOR = 2.2
 TOPUP_ROUNDS = 2
+# Part 1 overshoots with the big factor (asked 660 -> got ~450), so ask less: ~300 delivered.
+FIRST_PART_ASK_FACTOR = 1.4
+# Ava records at only ~1.5x real time on Render, so a part's sentence chunks are
+# recorded in parallel (shared cap across all parts; part 1 queues first).
+EDGE_CHUNK_CHARS = 700
+EDGE_PARALLEL = 4
 
 
 def normalize_length(length: str | None) -> str:
@@ -208,19 +214,28 @@ def _mock_part(idx: int, n: int, spanish: bool) -> str:
 
 # ---------------------------------------------------------------- TTS
 
-async def _edge_text(text: str) -> tuple[bytes, list]:
-    """Ava audio + word boundaries (offsets relative to the start of this text's audio)."""
+async def _edge_text(text: str, sem: asyncio.Semaphore | None = None) -> tuple[bytes, list]:
+    """Ava audio + word boundaries (offsets relative to the start of this text's audio).
+    Sentence chunks are recorded concurrently, then joined in order."""
+    chunks = S.split_at_sentences(text, EDGE_CHUNK_CHARS)
+    sem = sem or asyncio.Semaphore(EDGE_PARALLEL)
+
+    async def one(chunk: str) -> tuple[bytes, list]:
+        async with sem:
+            try:
+                return await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
+            except Exception:  # noqa: BLE001
+                await asyncio.sleep(1.5)
+                return await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
+
+    results = await asyncio.gather(*(one(c) for c in chunks))
     out = bytearray()
     marks: list = []
-    for chunk in S.split_at_sentences(text, config.TTS_CHUNK_CHARS):
-        try:
-            audio, m = await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
-        except Exception:  # noqa: BLE001
-            await asyncio.sleep(1.5)
-            audio, m = await S._synth_chunk_edge_timed(chunk, config.VOICE, config.RATE)
-        shift = RA.mp3_duration(bytes(out)) if out else 0.0
+    shift = 0.0
+    for audio, m in results:
         marks.extend((st + shift, du, w) for st, du, w in m)
         out.extend(audio)
+        shift += RA.mp3_duration(audio)
     return bytes(out), marks
 
 
@@ -229,7 +244,7 @@ async def synth_part(text: str, voice_id: str, language: str, state: dict) -> tu
     xAI voices fall back to Ava (and stay on Ava) on failure."""
     voice = get_voice(voice_id)
     if voice.engine == "edge" or state.get("fell_back"):
-        return await _edge_text(text)
+        return await _edge_text(text, state.get("edge_sem"))
     lang_code = tts_language_code(language)
     try:
         out = bytearray()
@@ -244,7 +259,7 @@ async def synth_part(text: str, voice_id: str, language: str, state: dict) -> tu
     except Exception as e:  # noqa: BLE001
         state["fell_back"] = True
         state["fallback_reason"] = str(e)[:80]
-        return await _edge_text(text)
+        return await _edge_text(text, state.get("edge_sem"))
 
 
 def part_timings(spoken: str, audio: bytes, marks: list | None) -> dict:
@@ -273,7 +288,7 @@ async def produce(
     folder.mkdir(parents=True, exist_ok=True)
     llm_sem = asyncio.Semaphore(LLM_CONCURRENCY)
     tts_sem = asyncio.Semaphore(TTS_CONCURRENCY)
-    tts_state: dict = {}
+    tts_state: dict = {"edge_sem": asyncio.Semaphore(EDGE_PARALLEL)}
     first_tts_started = asyncio.Event()  # part 1 always gets the first recording slot
 
     weights = [w / sum(words) for w in words]
@@ -306,7 +321,7 @@ async def produce(
             await asyncio.sleep(MOCK_DELAYS[i] if MOCK_DELAYS else 0.15 * (i + 1))
             text = _mock_part(i, n, spanish)
         else:
-            ask = int(words[i] * WORD_ASK_FACTOR)
+            ask = int(words[i] * (FIRST_PART_ASK_FACTOR if i == 0 else WORD_ASK_FACTOR))
             system, user = _part_prompt(outline, i, n, ask, idea, spanish)
             text = clean_part(await _llm_retry(llm_sem, system, user, int(ask * 2.2) + 400))
             if i > 0:  # later parts get topped up; part 1 stays fast

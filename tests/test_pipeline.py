@@ -152,6 +152,31 @@ def test_top_up_extends_short_parts():
     print("top-up OK")
 
 
+def test_edge_chunks_parallel_and_marks_shifted():
+    import asyncio
+
+    active = {"n": 0, "max": 0}
+
+    async def fake(text, voice, rate):
+        active["n"] += 1
+        active["max"] = max(active["max"], active["n"])
+        await asyncio.sleep(0.1)
+        active["n"] -= 1
+        return _timed(text)
+
+    text = " ".join(f"Sentence number {i} is soft and calm." for i in range(120))  # ~4.5k chars
+    with patch.object(story_mod, "_synth_chunk_edge_timed", side_effect=fake):
+        audio, marks = asyncio.run(pipeline._edge_text(text))
+    n_chunks = len(story_mod.split_at_sentences(text, pipeline.EDGE_CHUNK_CHARS))
+    assert n_chunks >= 3 and len(audio) == len(TINY) * n_chunks
+    assert 1 < active["max"] <= pipeline.EDGE_PARALLEL
+    starts = [m[0] for m in marks]
+    assert starts == sorted(starts) and starts[-1] > (n_chunks - 1) * TINY_DUR * 0.9  # shifted per chunk
+    t = pipeline.part_timings(text, audio, marks)
+    assert not t["estimated"] and len(t["words"]) == len(text.split())
+    print("edge parallel chunks OK", n_chunks, "chunks, max parallel", active["max"])
+
+
 def test_profiles_tag_and_filter():
     import threading
 
@@ -267,4 +292,5 @@ if __name__ == "__main__":
     test_mp3_duration_and_estimate()
     test_align_handles_punctuation_and_dashes()
     test_timings_endpoints_and_old_story_fallback()
+    test_edge_chunks_parallel_and_marks_shifted()
     print("== PIPELINE TESTS PASSED ==")
