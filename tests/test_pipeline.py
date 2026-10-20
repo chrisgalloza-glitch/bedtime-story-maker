@@ -278,6 +278,21 @@ def test_timings_endpoints_and_old_story_fallback():
     print("timings endpoints OK")
 
 
+def test_delete_story_endpoint():
+    from app import config
+    c = TestClient(app)
+    d = config.STORIES_DIR / "DelMe123"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "audio.mp3").write_bytes(TINY)
+    assert TestClient(app).delete("/api/stories/DelMe123").status_code == 401
+    c.post("/api/login", json={"pin": "4821"})
+    assert c.delete("/api/stories/DelMe123").json() == {"ok": True, "deleted": True}
+    assert not d.exists()
+    assert c.delete("/api/stories/DelMe123").json()["deleted"] is False
+    assert c.delete("/api/stories/a.b").status_code == 404
+    print("delete endpoint OK")
+
+
 async def _async(v):
     return v
 
@@ -293,4 +308,5 @@ if __name__ == "__main__":
     test_align_handles_punctuation_and_dashes()
     test_timings_endpoints_and_old_story_fallback()
     test_edge_chunks_parallel_and_marks_shifted()
+    test_delete_story_endpoint()
     print("== PIPELINE TESTS PASSED ==")

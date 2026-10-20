@@ -264,6 +264,20 @@ def get_story_timings(story_id: str, request: Request):
     return Response(path.read_text(encoding="utf-8"), media_type="application/json")
 
 
+@app.delete("/api/stories/{story_id}")
+def delete_story(story_id: str, request: Request):
+    """Grown-ups panel: remove a story's files from the server (tablet copy is removed client-side)."""
+    require_auth(request)
+    _safe_id(story_id)
+    folder = config.STORIES_DIR / story_id
+    if folder.is_dir() and folder.resolve().parent == config.STORIES_DIR.resolve():
+        import shutil
+
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"ok": True, "deleted": True}
+    return {"ok": True, "deleted": False}
+
+
 @app.get("/api/stories/{story_id}/text")
 def get_text(story_id: str, request: Request):
     require_auth(request)

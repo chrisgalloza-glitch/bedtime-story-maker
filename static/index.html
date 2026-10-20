@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="theme-color" content="#0f0f22" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Bedtime Story Maker</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon-192.png" />
@@ -13,96 +13,158 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>🌙 Bedtime Story Maker</h1>
-    <p class="sub">Tell me an idea. I’ll write a gentle story and read it to you.</p>
-  </header>
-
-  <section id="pin-screen" class="card pin-box">
-    <label class="big" for="pin">Family PIN</label>
-    <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" />
-    <div class="row">
-      <button class="btn" id="pin-go" type="button">Unlock</button>
+  <!-- 1. Waking up (cold start / offline): shown instead of the PIN until the server answers -->
+  <section id="wake-screen" class="screen center hidden" aria-live="polite">
+    <div class="wake-art"><span class="zz">😴</span><span class="wake-moon">🌙</span></div>
+    <h1 class="wake-h" data-i18n="wakeTitle">Waking up the story machine…</h1>
+    <p class="wake-p" id="wake-p" data-i18n="wakeText">It was sleeping! This takes about a minute.</p>
+    <div class="loader"><i></i></div>
+    <div id="wake-saved" class="wake-saved hidden">
+      <p class="wake-note" data-i18n="wakeSaved">While you wait, your saved stories still play:</p>
+      <ul id="wake-list" class="story-cards"></ul>
     </div>
-    <p class="status" id="pin-status">Ask a grown-up for the PIN.</p>
   </section>
 
-  <section id="app-screen" class="hidden">
-    <div class="card profile-card">
-      <label class="big">Who is listening tonight?</label>
-      <div class="profile-row" id="profile-row"></div>
-      <div class="profile-edit hidden" id="profile-edit">
-        <input id="profile-name" type="text" maxlength="16" placeholder="Name" />
-        <div class="emoji-grid" id="emoji-grid"></div>
-        <div class="row">
-          <button class="btn secondary" id="profile-cancel" type="button">Cancel</button>
-          <button class="btn" id="profile-save" type="button" style="flex:1">✓ Save</button>
+  <!-- 2. Family PIN (only when the server really says "not logged in") -->
+  <section id="pin-screen" class="screen center hidden">
+    <div class="pin-art">🌙</div>
+    <h1 class="pin-h">Bedtime Story Maker</h1>
+    <label class="pin-l" for="pin" data-i18n="pinLabel">Family PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" />
+    <button class="btn big" id="pin-go" type="button" data-i18n="unlock">Unlock</button>
+    <p class="status" id="pin-status" data-i18n="askGrownup">Ask a grown-up for the PIN.</p>
+  </section>
+
+  <!-- 3. Main kid screen -->
+  <main id="app-screen" class="hidden">
+    <header class="top">
+      <div class="logo">🌙 <span data-i18n="appName">Story Time</span></div>
+      <button id="grown-btn" class="grown-btn" type="button">🔒 <span data-i18n="grownups">Grown-ups</span></button>
+    </header>
+
+    <div class="layout">
+      <div class="colA">
+        <div class="kids" id="kids"></div>
+
+        <div class="lbl">💭 <span data-i18n="ideaQ">What's the story about?</span> <span class="alt" data-alt="ideaQ"></span></div>
+        <div class="idea">
+          <button id="talk-btn" class="talk" type="button"><span class="talk-ico">🎤</span><small data-i18n="talk">Talk</small></button>
+          <textarea id="idea" data-i18n-ph="ideaPh" placeholder="a little duck who finds a sparkly pond…"></textarea>
+        </div>
+        <p class="hint" id="idea-hint"></p>
+      </div>
+
+      <div class="colB">
+        <div class="lbl">🗣️ <span data-i18n="whoReads">Who reads?</span> <span class="alt" data-alt="whoReads"></span></div>
+        <div class="voices" id="voices"></div>
+
+        <div class="lbl">⏰ <span data-i18n="howLong">How long?</span> <span class="alt" data-alt="howLong"></span></div>
+        <div class="len" id="len">
+          <button type="button" data-length="short"><span class="moons">🌙</span><small>10 min</small></button>
+          <button type="button" data-length="medium"><span class="moons">🌙🌙</span><small>15 min</small></button>
+          <button type="button" data-length="long"><span class="moons">🌙🌙🌙</span><small>23 min</small></button>
+        </div>
+
+        <div class="make-area" id="make-area">
+          <button id="make-btn" class="make" type="button">✨ <span data-i18n="make">Make My Story</span> ✨<small data-i18n="makeSub">Starts in about a minute</small></button>
+          <div id="making" class="making hidden" aria-live="polite">
+            <div class="making-top"><span id="making-text" data-i18n="making">Making your story…</span> <b id="making-pct">0%</b></div>
+            <div class="progress-track"><div class="progress-fill" id="progress-fill"></div><span class="progress-rider" id="progress-rider">🦆</span></div>
+            <div id="celebrate" class="celebrate hidden" aria-hidden="true"></div>
+          </div>
+          <button id="np-bar" class="np-bar hidden" type="button">🎧 <span data-i18n="nowPlaying">Now playing — tap to open</span></button>
         </div>
       </div>
     </div>
 
-    <div class="card">
-      <label class="big">Language / Idioma</label>
-      <div class="lang" role="group">
-        <button type="button" class="active" data-lang="English" id="lang-en">English</button>
-        <button type="button" data-lang="Español" id="lang-es">Español</button>
-      </div>
+    <section class="mystories">
+      <div class="lbl">📚 <span data-i18n="myStories">My stories</span> <span class="alt" data-alt="myStories"></span></div>
+      <ul id="story-list" class="story-cards"></ul>
+    </section>
 
-      <label class="big">Who should read?</label>
-      <div class="voice-grid" id="voice-grid" aria-label="Choose a voice"></div>
+    <p class="footer" id="install-hint" data-i18n="installHint">Tip for grown-ups: Chrome menu → Add to Home screen.</p>
+  </main>
 
-      <label class="big">How long?</label>
-      <div class="lang" id="length-group" role="group">
-        <button type="button" data-length="short">🌙 Short<br><small>~10 min</small></button>
-        <button type="button" class="active" data-length="medium">🌙🌙 Medium<br><small>~15 min</small></button>
-        <button type="button" data-length="long">🌙🌙🌙 Long<br><small>~23 min</small></button>
-      </div>
-
-      <label class="big" for="idea">Your story idea</label>
-      <textarea id="idea" placeholder="Example: a little duck who finds a sparkly pond and makes a new friend…"></textarea>
-      <p class="hint">🎤 Tip: tap the microphone on your keyboard to talk your idea.</p>
-      <div class="row">
-        <button class="btn mic hidden" id="mic-btn" type="button" title="Speak">🎤 Speak</button>
-        <button class="btn" id="make-btn" type="button" style="flex:1">✨ Make My Story</button>
-      </div>
-      <div id="progress-wrap" class="progress-wrap hidden" aria-live="polite">
-        <div class="progress-pct-row">
-          <span id="progress-pct" class="progress-pct">0%</span>
-        </div>
-        <div class="progress-track" id="progress-track">
-          <div class="progress-fill" id="progress-fill"></div>
-          <span class="progress-rider" id="progress-rider">🦆</span>
-        </div>
-        <div id="celebrate" class="celebrate hidden" aria-hidden="true"></div>
-      </div>
-      <p class="status" id="status">Type your idea, then press Make My Story!</p>
+  <!-- 4. Full-screen bedtime player -->
+  <section id="player-screen" class="overlay player hidden" aria-label="Story player">
+    <div class="ptop">
+      <button id="p-back" class="pbtn" type="button">⬅ <span data-i18n="back">Back</span></button>
+      <button id="p-dim" class="pbtn" type="button">🔅 <span data-i18n="dim">Dim</span></button>
     </div>
-
-    <div class="card hidden" id="player-card">
-      <label class="big" id="result-title">Your story</label>
-      <p class="status ok" id="now-playing">Starting now!</p>
-      <div class="row" id="live-controls">
-        <button class="btn secondary" id="restart-btn" type="button" style="flex:1">⏮️ Start over</button>
-        <button class="btn" id="live-toggle" type="button" style="flex:1">⏸ Pause</button>
-      </div>
-      <div class="row">
-        <button class="btn readalong-btn" id="readalong-btn" type="button" style="flex:1" aria-pressed="false">📖 Read along</button>
+    <div class="pgrid">
+      <div class="pmain">
+        <div class="moon">🌙</div>
+        <div id="p-title" class="ptitle"></div>
+        <div id="p-sub" class="psub"></div>
+        <button id="p-toggle" class="bigplay" type="button" aria-label="Pause"><span id="p-glyph">❚❚</span></button>
+        <div id="p-state" class="pstate"></div>
+        <div class="prow">
+          <button id="p-restart" class="sbtn" type="button">⏮️ <span data-i18n="startOver">Start over</span></button>
+          <button id="p-words" class="sbtn words" type="button" aria-pressed="false">📖 <span id="p-words-l" data-i18n="readAlong">Read along</span></button>
+        </div>
+        <div id="p-stars" class="stars"></div>
+        <div id="p-cap" class="pcap"></div>
+        <div id="p-seekrow" class="seekrow hidden">
+          <span id="p-cur">0:00</span><input type="range" id="p-seek" min="0" max="1000" value="0" /><span id="p-dur">0:00</span>
+        </div>
       </div>
       <div id="readalong" class="readalong hidden" aria-live="off"></div>
-      <audio id="player" controls playsinline class="hidden"></audio>
-      <div class="row">
-        <a class="btn secondary" id="download-btn" href="#" download>⬇ Download MP3</a>
+    </div>
+    <audio id="player" playsinline preload="auto"></audio>
+  </section>
+
+  <!-- 5. Friendly error -->
+  <section id="oops" class="overlay center oops hidden" role="alertdialog">
+    <div class="oops-art" id="oops-art">🙈</div>
+    <h1 class="oops-h" id="oops-h">Oops! The story got lost.</h1>
+    <p class="oops-p" id="oops-p">Let's try again.</p>
+    <button id="oops-retry" class="btn big make-like" type="button">🔄 <span data-i18n="tryAgain">Try again</span></button>
+    <button id="oops-back" class="btn ghost" type="button" data-i18n="back">Back</button>
+    <details class="oops-d"><summary data-i18n="details">Grown-ups: details</summary><p id="oops-detail"></p></details>
+  </section>
+
+  <!-- 6. Grown-ups panel (opened with the family PIN) -->
+  <section id="grown-screen" class="overlay grown hidden" aria-label="Grown-ups">
+    <div class="gwrap">
+      <div class="ghead"><h1>🔒 <span data-i18n="grownups">Grown-ups</span></h1><button id="g-close" class="pbtn" type="button">✕ <span data-i18n="close">Close</span></button></div>
+
+      <div class="gsec"><h2>🗣️ <span data-i18n="gVoices">Voices</span></h2>
+        <div class="grow"><span data-i18n="gAllowGrok">Allow Grok voices (Luna, Carina, Orion)</span><button class="tg" id="g-allow" type="button" role="switch"></button></div>
+        <div class="grow"><span data-i18n="gAskGrok">Ask a grown-up before using them</span><button class="tg" id="g-ask" type="button" role="switch"></button></div>
+        <p class="gnote" data-i18n="gCostNote">Ava is free. Grok voices cost roughly 16–34¢ per story (Short to Long).</p>
+        <ul id="g-voices" class="gvoices"></ul>
+      </div>
+
+      <div class="gsec"><h2>🌎 <span data-i18n="gLanguage">Language</span></h2>
+        <div class="grow"><span data-i18n="gScreenLang">Screen language</span>
+          <div class="seg" id="g-uilang"><button data-v="auto" type="button">Auto</button><button data-v="en" type="button">EN</button><button data-v="es" type="button">ES</button></div></div>
+        <div id="g-storylang"></div>
+        <p class="gnote" data-i18n="gAutoNote">Auto follows each kid's story language.</p>
+      </div>
+
+      <div class="gsec"><h2>🌙 <span data-i18n="gBedtime">Bedtime</span></h2>
+        <div class="grow"><span data-i18n="gDim">Extra-dim night colors</span><button class="tg" id="g-dim" type="button" role="switch"></button></div>
+        <div class="grow"><span data-i18n="gDark">Turn screen dark after story starts</span><button class="tg" id="g-dark" type="button" role="switch"></button></div>
+        <div class="grow"><span data-i18n="gFilter">Gentle-words filter on story ideas</span><button class="tg" id="g-filter" type="button" role="switch"></button></div>
+      </div>
+
+      <div class="gsec"><h2>📚 <span data-i18n="gStories">Stories</span></h2>
+        <p class="gnote" id="g-storage" data-i18n="gSavedNote">Stories are saved on this tablet.</p>
+        <ul id="g-stories" class="gstories"></ul>
+      </div>
+
+      <div class="gsec"><h2>🔑 <span data-i18n="gPin">Family PIN</span></h2>
+        <p class="gnote" data-i18n="gPinHow">To change the PIN: open Render → bedtime-story-maker → Environment → edit FAMILY_PIN → Save. The site restarts; then unlock with the new PIN.</p>
+        <button id="g-logout" class="btn ghost" type="button" data-i18n="logout">Log out</button>
       </div>
     </div>
-
-    <div class="card stories">
-      <h2>Past stories</h2>
-      <ul id="story-list"><li class="meta">None yet — make your first story!</li></ul>
-    </div>
-
-    <p class="footer">Add to Home Screen for easy bedtime use.<br/>
-      Chrome menu → Add to Home screen / Install app</p>
   </section>
+
+  <!-- Modal (rename kid, confirm, PIN prompt, messages) -->
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
+  <!-- Bedtime helpers -->
+  <div id="dim-veil" class="dim-veil hidden" aria-hidden="true"></div>
+  <div id="darkener" class="darkener hidden"><span data-i18n="tapToSee">Tap to see the screen</span></div>
 
   <script src="/app.js"></script>
 </body>
